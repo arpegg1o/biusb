@@ -64,7 +64,6 @@
     });
 
     let catalogIndex = null;      // raw search-index.json entries
-    let catalogHaystack = [];     // normalizeForFuzzyMatch'd, same order as catalogIndex
     let departmentNameById = new Map();
     const courseDetailCache = new Map();
 
@@ -75,8 +74,9 @@
                 fetch('data/departments.json'),
             ]);
             catalogIndex = await indexRes.json();
-            catalogHaystack = catalogIndex.map((e) =>
-                normalizeForFuzzyMatch(`${e.nameHeNorm} ${e.nameEnNorm || ''} ${e.lecturersNorm || ''} ${e.courseCode}`));
+            // The fuzzy-search haystack is built per-semester instead of once
+            // here — see getSemesterFilteredCatalog() — since only choosing
+            // courses from the currently selected semester is the point.
 
             const departments = deptRes.ok ? await deptRes.json() : [];
             departmentNameById = new Map(departments.map((d) => [d.id, d.nameHe]));
@@ -99,6 +99,38 @@
     let searchDropdownEl, searchInputEl;
     let searchResultsCache = [];
 
+    // "only allow choosing courses from the current semester" — a course
+    // matches the semester picker (#semesterSelect, "א'"/"ב'"/"קיץ") if it
+    // has a group in that exact semester, OR an annual group (spans both
+    // א'/ב', but not קיץ) — same rule the main Schedule Maker app uses.
+    function semesterKeyFromSelect(sem) {
+        if (sem === "א'") return 'a';
+        if (sem === "ב'") return 'b';
+        if (sem === "קיץ") return 'summer';
+        return null;
+    }
+
+    // Recomputing the fuzzy haystack for ~thousands of entries on every
+    // keystroke would be wasteful — cache the semester-filtered {index,
+    // haystack} pair and only rebuild it when the semester (or the loaded
+    // catalog itself) actually changes.
+    let filteredCatalogCache = { semester: undefined, sourceIndex: undefined, index: [], haystack: [] };
+
+    function getSemesterFilteredCatalog() {
+        const sem = getCurrentSemester();
+        if (filteredCatalogCache.semester === sem && filteredCatalogCache.sourceIndex === catalogIndex) {
+            return filteredCatalogCache;
+        }
+        const key = semesterKeyFromSelect(sem);
+        const index = (catalogIndex || []).filter(
+            (e) => !key || !e.semesters || e.semesters.includes(key) || e.semesters.includes('annual'),
+        );
+        const haystack = index.map((e) =>
+            normalizeForFuzzyMatch(`${e.nameHeNorm} ${e.nameEnNorm || ''} ${e.lecturersNorm || ''} ${e.courseCode}`));
+        filteredCatalogCache = { semester: sem, sourceIndex: catalogIndex, index, haystack };
+        return filteredCatalogCache;
+    }
+
     function onSearchInput() {
         searchDropdownEl = searchDropdownEl || document.getElementById('searchResultsDropdown');
         searchInputEl = searchInputEl || document.getElementById('courseSearchInput');
@@ -109,14 +141,16 @@
             return;
         }
 
+        const { index: semesterIndex, haystack: semesterHaystack } = getSemesterFilteredCatalog();
+
         const query = searchInputEl.value.trim();
         let results;
         if (!query) {
-            results = catalogIndex.slice(0, 20);
+            results = semesterIndex.slice(0, 20);
         } else {
             const needle = normalizeForFuzzyMatch(query);
-            const [idxs, info, order] = fuzzy.search(catalogHaystack, needle, undefined, 1000);
-            results = (!idxs || !info || !order) ? [] : order.slice(0, 30).map((i) => catalogIndex[info.idx[i]]);
+            const [idxs, info, order] = fuzzy.search(semesterHaystack, needle, undefined, 1000);
+            results = (!idxs || !info || !order) ? [] : order.slice(0, 30).map((i) => semesterIndex[info.idx[i]]);
         }
 
         searchResultsCache = results;

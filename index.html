@@ -244,19 +244,25 @@
     <h3 style="margin-top:0;">הגדרות</h3>
 
     <div class="settings-row">
-        <label for="settingsOverlapsToggle">אפשר חפיפות (מצב מפתח)</label>
-        <div class="switch">
+        <span>אפשר חפיפות (מצב מפתח)</span>
+        <!-- Must be a <label> WRAPPING the input (not a <div> with the text
+             in a separate `for`-linked label) — the actual <input> is
+             invisible (opacity:0, 0x0 — see .switch input in styles.css) and
+             only the sibling .slider is visually clickable; a `for` attribute
+             on a label elsewhere doesn't make clicking the slider toggle it,
+             only a label that visually contains it does. -->
+        <label class="switch">
             <input type="checkbox" id="settingsOverlapsToggle" class="danger-switch" onchange="setDevMode(this.checked)">
             <span class="slider"></span>
-        </div>
+        </label>
     </div>
 
     <div class="settings-row">
-        <label for="settingsExerciseWithoutLectureToggle">אפשר בחירת תרגיל בלי הרצאה</label>
-        <div class="switch">
+        <span>אפשר בחירת תרגיל בלי הרצאה</span>
+        <label class="switch">
             <input type="checkbox" id="settingsExerciseWithoutLectureToggle" onchange="setAllowExerciseWithoutLecture(this.checked)">
             <span class="slider"></span>
-        </div>
+        </label>
     </div>
 
     <div class="settings-row">
