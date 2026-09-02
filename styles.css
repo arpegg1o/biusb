@@ -1,0 +1,504 @@
+        /* Base Light Theme */
+        :root {
+            --primary: #4a90e2;
+            --bg: #f5f7fa;
+            --card: #ffffff;
+            --border: #e1e4e8;
+            --danger: #e74c3c;
+            --success: #2ecc71;
+            
+            --icon-active: #3498db;
+            --icon-free: #27ae60;      
+            --icon-conditional: #e67e22; 
+            --icon-locked: #bdc3c7;      
+
+            --text-main: #333333;
+            --text-muted: #666666;
+            --bg-alt: #f8f9fa;
+        }
+
+        /* Dark Theme Toggle */
+        html[data-theme="dark"] {
+            --bg: #121212;
+            --card: #1e1e1e;
+            --border: #333333;
+            --text-main: #e0e0e0;
+            --text-muted: #aaaaaa;
+            --bg-alt: #2c2c2c;
+        }
+        
+        html[data-theme="dark"] .class-event { color: #000; }
+        html[data-theme="dark"] .class-type, html[data-theme="dark"] .elective-badge { color: #fff; }
+
+        /* "מערכת" (system) theme option — no data-theme attribute at all means
+         * "follow the OS", so these mirror the dark overrides above under a
+         * media query instead. Guarded so an explicit light choice still wins
+         * (see setTheme() in app.js, which only ever sets "light"/"dark"/removes
+         * the attribute — never sets it to "light" AND relies on this media
+         * query, so the :not() guard here is what prevents a flash of the
+         * wrong theme if the OS is dark but the user explicitly chose light). */
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) {
+                --bg: #121212;
+                --card: #1e1e1e;
+                --border: #333333;
+                --text-main: #e0e0e0;
+                --text-muted: #aaaaaa;
+                --bg-alt: #2c2c2c;
+            }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .class-event { color: #000; }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .class-type,
+            html:not([data-theme="light"]):not([data-theme="dark"]) .elective-badge { color: #fff; }
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            position: relative;
+            transition: background 0.3s, color 0.3s;
+            overflow-x: hidden; /* Prevents unwanted scrolling if sidebar goes too far right */
+        }
+
+        /* Theme Toggle Button */
+        #themeToggleBtn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: none;
+            border: none;
+            color: var(--text-main);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #themeToggleBtn:hover {
+            background: rgba(128, 128, 128, 0.2);
+        }
+
+        #settingsToggleBtn {
+            position: absolute;
+            top: 20px;
+            left: 60px;
+            background: none;
+            border: none;
+            color: var(--text-main);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #settingsToggleBtn:hover {
+            background: rgba(128, 128, 128, 0.2);
+        }
+
+        .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+        .settings-row:last-child { border-bottom: none; }
+        .settings-row label:first-child { font-size: 14px; }
+        .theme-radio-group { display: flex; gap: 6px; }
+        .theme-radio-group label { display: flex; align-items: center; gap: 4px; font-weight: normal; font-size: 13px; cursor: pointer; }
+
+        /* Restored container to x1 - x2 centering */
+        .container {
+            max-width: 1250px; 
+            margin: 0 auto;
+            position: relative;
+        }
+        
+        .header-panel {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+            transition: background 0.3s;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            resize: vertical;
+            font-family: inherit;
+            box-sizing: border-box;
+            font-size: 14px;
+            background: var(--bg);
+            color: var(--text-main);
+            transition: background 0.3s, color 0.3s, border-color 0.3s;
+        }
+        .paste-options { margin-top: 10px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+
+        /* Course search — replaces the old top-level paste box; the paste
+         * flow itself moved into the manual-add dialog (see #pasteAddSection). */
+        .search-box { position: relative; }
+        .search-box input[type="text"] { width: 100%; box-sizing: border-box; font-size: 16px; }
+        .search-results-dropdown {
+            position: absolute; top: calc(100% + 4px); right: 0; left: 0; z-index: 20;
+            background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15); max-height: 340px; overflow-y: auto;
+        }
+        .search-result-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: 14px; }
+        .search-result-item:last-child { border-bottom: none; }
+        .search-result-item:hover, .search-result-item.highlighted { background: var(--bg-alt); }
+        .search-result-name { font-weight: bold; }
+        .search-result-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+        .search-empty, .search-loading { padding: 12px 14px; color: var(--text-muted); font-size: 13px; }
+
+        /* Group picker (shown after choosing a search result) */
+        .group-section { margin-bottom: 14px; }
+        .group-section h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+        .group-row {
+            display: flex; justify-content: space-between; align-items: center; gap: 10px;
+            border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px;
+        }
+        .group-row.added { border-color: var(--primary); background: rgba(74, 144, 226, 0.08); }
+        .group-locked { opacity: 0.45; pointer-events: none; }
+
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--icon-conditional); }
+        input:checked + .slider:before { transform: translateX(20px); }
+        
+        input.danger-switch:checked + .slider { background-color: var(--danger); }
+
+        .toggle-label { font-weight: bold; font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 8px;}
+
+        .btn-group {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        /* Redesigned Simple Buttons */
+        button {
+            font-family: inherit;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 15px;
+            font-weight: bold;
+            transition: all 0.2s;
+            padding: 10px 20px;
+        }
+        
+        .btn-simple {
+            background: var(--card);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+        }
+        .btn-simple:hover { background: var(--bg-alt); }
+        .btn-simple:disabled { opacity: 0.4; cursor: not-allowed; }
+        
+        .icon-only {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        button.danger { background: var(--danger); color: white; border: none; }
+        button.danger:hover { background: #c0392b; }
+
+        /* Export Dropdown */
+        .dropdown { position: relative; display: inline-block; }
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: var(--card);
+            min-width: 160px;
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2);
+            z-index: 10;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            top: 100%;
+            right: 0;
+            overflow: hidden;
+        }
+        .dropdown-content button {
+            color: var(--text-main);
+            padding: 12px 16px;
+            text-decoration: none;
+            display: block;
+            background: none;
+            border: none;
+            border-bottom: 1px solid var(--border);
+            width: 100%;
+            text-align: right;
+            border-radius: 0;
+            font-weight: normal;
+        }
+        .dropdown-content button:last-child { border-bottom: none; }
+        .dropdown-content button:hover { background-color: var(--bg-alt); font-weight: bold;}
+        .dropdown:hover .dropdown-content { display: block; }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            padding: 15px;
+            background: var(--card);
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            flex-wrap: wrap;
+            transition: background 0.3s;
+        }
+        select, input {
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font-size: 16px;
+            background: var(--bg);
+            color: var(--text-main);
+            transition: background 0.3s, color 0.3s;
+        }
+        .status { font-weight: bold; font-size: 18px; min-width: 200px; text-align: center; transition: color 0.3s, font-size 0.3s; }
+        
+        .legend { width: 100%; display: flex; justify-content: center; gap: 20px; font-size: 13px; margin-top: 5px; padding-top: 10px; border-top: 1px solid var(--border); }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+
+        /* Schedule Layout Wrappers */
+        .main-layout { 
+            position: relative; 
+            margin-bottom: 30px; 
+            display: flex;
+            width: 100%;
+        }
+
+        .schedule-column {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: var(--card);
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            border: 1px solid var(--border);
+            padding: 15px;
+            box-sizing: border-box;
+            transition: background 0.3s;
+            position: absolute;
+            right: -280px; /* Pushes it outside the container boundaries to the right (x2 to x4) */
+            top: 0;
+        }
+
+        .sidebar h3 { margin-top: 0; font-size: 16px; border-bottom: 2px solid var(--primary); padding-bottom: 8px; margin-bottom: 12px; }
+        .elective-list { list-style: none; padding: 0; margin: 0; }
+        .elective-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .elective-item:hover { background: var(--bg-alt); }
+        .elective-item.status-active { border-color: var(--icon-active); background: rgba(52, 152, 219, 0.05); }
+        .elective-item.status-free { border-left: 4px solid var(--icon-free); }
+        .elective-item.status-conditional { border-left: 4px solid var(--icon-conditional); }
+        .elective-item.status-locked { border-left: 4px solid var(--icon-locked); opacity: 0.6; cursor: not-allowed; }
+        
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+        /* Calendar Grid */
+        .calendar-wrapper {
+            flex: 1;
+            background: var(--card);
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            transition: background 0.3s, opacity 0.3s;
+        }
+        .calendar-headers { display: flex; background: var(--bg-alt); border-bottom: 1px solid var(--border); transition: background 0.3s; }
+        .header-cell { flex: 1; text-align: center; padding: 10px; font-weight: bold; font-size: 14px; border-left: 1px solid var(--border); box-sizing: border-box; }
+        .header-cell.time-hdr { width: 60px; flex: none; border-left: 1px solid var(--border); }
+        .header-cell:last-child { border-left: none; }
+        
+        .calendar-body { display: flex; position: relative; }
+        .time-col { width: 60px; flex: none; background: var(--bg-alt); border-left: 1px solid var(--border); box-sizing: border-box; transition: background 0.3s;}
+        
+        .day-col {
+            flex: 1; 
+            position: relative; 
+            border-left: 1px solid var(--border); 
+            box-sizing: border-box; 
+            background-image: linear-gradient(to bottom, transparent 49px, var(--border) 49px, var(--border) 50px);
+            background-size: 100% 50px;
+        }
+        .day-col:last-child { border-left: none; }
+        
+        .time-slot { height: 50px; box-sizing: border-box; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 12px; padding: 5px; margin: 0; text-align: center;}
+
+        /* Class Events */
+        .class-event {
+            container-type: inline-size; 
+            position: absolute; width: 100%; right: 0; border: 2px solid; border-radius: 6px; 
+            padding: 26px 4px 4px 4px; 
+            font-size: 12px; overflow: hidden; box-sizing: border-box; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; z-index: 2;
+            color: #000;
+        }
+
+        .class-event.text-area { cursor: text; }
+        .class-event.locked-area { cursor: not-allowed; }
+        .class-event.draggable-area { cursor: grab; }
+        .class-event.draggable-area:active { cursor: grabbing; z-index: 10; box-shadow: 0 8px 16px rgba(0,0,0,0.2); }
+        
+        .class-event.ghost { opacity: 0.85; border-style: dashed !important; z-index: 3; cursor: pointer; }
+        .class-event.ghost:hover { box-shadow: 0 4px 10px rgba(0,0,0,0.25); transform: scale(1.02); opacity: 1; }
+        .dimmed { opacity: 0.25; pointer-events: none; }
+
+        /* Calendar-preview picker (see startPreview() in app.js): while active,
+         * everything real on the calendar fades into the background except the
+         * candidate ghost blocks, which stay fully visible and clickable. */
+        .calendar-wrapper.preview-mode .class-event:not(.preview-ghost) { opacity: 0.12; pointer-events: none; transition: opacity 0.2s; }
+        .class-event.preview-ghost { z-index: 5; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .class-event.preview-ghost:hover { transform: scale(1.03); }
+        .class-event.preview-ghost-added { border-style: solid !important; box-shadow: 0 0 0 2px var(--primary), 0 4px 12px rgba(0,0,0,0.3); }
+
+        .preview-control-bar {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 15;
+            background: var(--card); border-top: 2px solid var(--primary);
+            box-shadow: 0 -4px 16px rgba(0,0,0,0.15); padding: 12px 20px;
+            max-height: 40vh; overflow-y: auto;
+        }
+
+        .exporting .class-event {
+            padding-top: 10px !important;
+        }
+
+        .class-title { 
+            font-weight: bold; margin-bottom: 2px; 
+            font-size: clamp(9px, 13cqw, 13px); 
+            line-height: 1.1; 
+            display: -webkit-box;
+            -webkit-line-clamp: 3; 
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            word-wrap: break-word;
+        }
+        .class-meta { display: flex; gap: 3px; align-items: center; justify-content:center; flex-wrap: wrap; margin-bottom: 2px; }
+        
+        .class-type { font-size: clamp(8px, 10cqw, 10px); background: rgba(0,0,0,0.4); color: white; padding: 1px 4px; border-radius: 10px; display: inline-block;}
+        .elective-badge { font-size: clamp(8px, 10cqw, 10px); background: var(--icon-conditional); color: white; padding: 1px 4px; border-radius: 10px; display: inline-block; }
+        
+        .box-actions {
+            position: absolute; top: 2px; left: 2px; display: flex; gap: 2px; background: rgba(255,255,255,0.85); border-radius: 6px; padding: 1px;
+        }
+        .box-btn {
+            background: none; border: none; cursor: pointer; padding: 3px; color: #333; transition: transform 0.1s, opacity 0.2s;
+            display: flex; align-items: center; justify-content: center; border-radius: 4px;
+        }
+        .box-btn:hover { transform: scale(1.15); background: rgba(0,0,0,0.08); }
+        .box-btn.locked { cursor: not-allowed; opacity: 0.4; transform: none; }
+        .box-btn.locked:hover { background: none; }
+        .box-btn.delete-btn:hover { color: var(--danger); }
+        
+        /* Course List */
+        .course-list { background: var(--card); padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); transition: background 0.3s; }
+        .course-group { margin-bottom: 15px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .course-group-title { background: var(--bg-alt); padding: 10px 15px; font-weight: bold; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .course-option-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; border-bottom: 1px solid var(--border); }
+        .course-option-row:last-child { border-bottom: none; }
+        
+        .make-elective-btn { background: var(--bg); color: var(--text-main); border: 1px solid var(--border); padding: 6px 12px; font-size: 12px; border-radius: 4px; transition: 0.2s; margin:0;}
+        .make-elective-btn:hover { background: var(--border); }
+        .make-elective-btn.active { background: var(--icon-conditional); color: white; border-color: var(--icon-conditional); }
+        .make-elective-btn.active:hover { background: #d35400; }
+
+        .icon-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 5px; font-size: 16px; transition: transform 0.1s; }
+        .icon-btn:hover { transform: scale(1.1); color: var(--text-main); }
+        
+        /* Dialog Modal */
+        dialog { border: none; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 25px; width: 90%; max-width: 400px; background: var(--card); color: var(--text-main); }
+        dialog::backdrop { background: rgba(0,0,0,0.5); }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
+        .form-group input, .form-group select { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 5px; box-sizing: border-box; font-family: inherit; }
+        .dialog-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+        /* Mobile Responsiveness */
+        @media (max-width: 1600px) {
+            .sidebar { position: static; right: auto; margin-bottom: 20px; }
+            .main-layout { flex-direction: column; }
+        }
+        @media (max-width: 900px) {
+            .schedule-column { min-width: 100%; width: 100%; }
+            .sidebar { width: 100%; }
+            .calendar-wrapper { overflow: visible; background: none; border: none; box-shadow: none; }
+            .calendar-headers { display: none; }
+            .calendar-body { flex-direction: column !important; height: auto !important; }
+            .time-col { display: none; }
+            
+            .day-col { 
+                border-left: none !important; 
+                background: var(--card) !important;
+                padding: 15px; 
+                margin-bottom: 20px; 
+                border: 1px solid var(--border);
+                border-radius: 10px;
+                min-height: auto;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            }
+            .day-col:empty { display: none; }
+            .day-col::before {
+                content: attr(data-day);
+                display: block;
+                font-weight: bold;
+                font-size: 18px;
+                margin-bottom: 15px;
+                border-bottom: 2px solid var(--primary);
+                padding-bottom: 8px;
+                color: var(--primary);
+            }
+            
+            .class-event {
+                position: relative !important;
+                top: 0 !important;
+                width: 100% !important;
+                right: 0 !important;
+                height: auto !important;
+                padding: 15px !important;
+                margin-bottom: 12px;
+                border-width: 2px !important;
+                opacity: 1 !important;
+                transform: none !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+            }
+            .class-event.ghost {
+                border-style: solid !important;
+                border-color: var(--icon-conditional) !important;
+                background: rgba(230, 126, 34, 0.1) !important;
+            }
+            .class-event.ghost .class-title::after {
+                content: " (לחץ להחלפה)";
+                color: var(--icon-conditional);
+                font-weight: normal;
+                font-size: 11px;
+                display: block;
+                margin-top: 2px;
+            }
+            .box-actions { top: 10px; left: 10px; }
+        }
