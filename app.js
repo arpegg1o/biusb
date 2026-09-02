@@ -371,12 +371,24 @@
     // =====================================================================
     let previewState = null; // { course, type } | null
 
+    /** Same semester rule as search (see semesterKeyFromSelect above): a
+     * group belongs to the currently-selected semester if it matches
+     * exactly, or is annual (spans both א'/ב'). Used everywhere the
+     * calendar-preview picker looks at a course's groups, so it never
+     * offers/previews a group from a semester the student isn't even
+     * looking at. */
+    function groupMatchesCurrentSemester(g) {
+        const key = semesterKeyFromSelect(getCurrentSemester());
+        if (!key) return true;
+        return g.semester === key || g.semester === 'annual';
+    }
+
     function getPreviewGhostEntries() {
         if (!previewState) return [];
         const { course, type } = previewState;
         const entries = [];
         course.groups
-            .filter((g) => g.type === type)
+            .filter((g) => g.type === type && groupMatchesCurrentSemester(g))
             .forEach((g) => {
                 g.meetings.forEach((m) => {
                     const day = DAY_LETTERS[m.dayOfWeek];
@@ -399,13 +411,17 @@
     }
 
     function availablePreviewTypes(course) {
-        const present = new Set(course.groups.filter((g) => g.type !== 'other').map((g) => g.type));
+        const present = new Set(
+            course.groups.filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g)).map((g) => g.type),
+        );
         return SLOT_ORDER.filter((t) => present.has(t));
     }
 
     function isLectureChosen(course) {
-        const lectureGroupIds = course.groups.filter((g) => g.type === 'lecture').map((g) => g.id);
-        if (lectureGroupIds.length === 0) return true; // no lecture at all — nothing to unlock
+        const lectureGroupIds = course.groups
+            .filter((g) => g.type === 'lecture' && groupMatchesCurrentSemester(g))
+            .map((g) => g.id);
+        if (lectureGroupIds.length === 0) return true; // no lecture this semester — nothing to unlock
         return rawCourses.some((c) => lectureGroupIds.includes(c.courseGroupId));
     }
 
@@ -489,7 +505,9 @@
         // choose them from a list" — groups of the active type with no
         // meetings at all can't be drawn as a calendar ghost, so they get a
         // small plain list here instead.
-        const noHourGroups = course.groups.filter((g) => g.type === type && g.meetings.length === 0);
+        const noHourGroups = course.groups.filter(
+            (g) => g.type === type && g.meetings.length === 0 && groupMatchesCurrentSemester(g),
+        );
         const noHourHtml = noHourGroups.length ? `
             <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">
                 <p style="font-size:12px; color:var(--text-muted); margin:0 0 6px;">קבוצות ללא שעות קבועות:</p>
@@ -1829,7 +1847,11 @@
         // (with an "added" style and its own click-to-remove), so rendering
         // both was a literal visual duplicate of the same block.
         const previewedGroupIds = previewState
-            ? new Set(previewState.course.groups.filter((g) => g.type === previewState.type).map((g) => g.id))
+            ? new Set(
+                  previewState.course.groups
+                      .filter((g) => g.type === previewState.type && groupMatchesCurrentSemester(g))
+                      .map((g) => g.id),
+              )
             : null;
 
         schedule.forEach(cls => {
