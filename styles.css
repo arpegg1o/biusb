@@ -67,6 +67,9 @@
             position: absolute;
             top: 20px;
             left: 20px;
+            z-index: 20; /* .container is also `position: relative` and comes
+                after these buttons in the DOM — without an explicit z-index
+                here, it paints on top and silently swallows clicks on them. */
             background: none;
             border: none;
             color: var(--text-main);
@@ -86,6 +89,7 @@
             position: absolute;
             top: 20px;
             left: 60px;
+            z-index: 20; /* see #themeToggleBtn's comment above */
             background: none;
             border: none;
             color: var(--text-main);

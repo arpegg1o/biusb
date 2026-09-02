@@ -353,6 +353,7 @@
                             id: g.id,
                             name: course.nameHe,
                             type: TYPE_MAP[g.type],
+                            lecturerName: g.lecturerName || '',
                             start: formatMinutesToTime(m.startMinutes),
                             end: formatMinutesToTime(m.endMinutes),
                             __isPreviewGhost: true,
@@ -1513,6 +1514,7 @@
             el.onclick = () => pickPreviewGroup(cls.id);
             el.innerHTML = `
                 <div class="class-title">${cls.name}</div>
+                ${cls.lecturerName ? `<div style="font-size: clamp(8px, 10cqw, 10px); margin-top: 1px;">${cls.lecturerName}</div>` : ''}
                 <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
                 <div style="font-size: 10px; margin-top: 4px; font-weight: bold;">${added ? '✓ נבחר — לחיצה להסרה' : 'לחיצה לבחירה'}</div>
             `;
