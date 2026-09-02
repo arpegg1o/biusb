@@ -702,7 +702,6 @@
         applyThemeMode(getThemeMode());
 
         devModeAllowOverlaps = localStorage.getItem('myScheduleDevMode') === 'true';
-        document.getElementById('devModeToggle').checked = devModeAllowOverlaps;
 
         allowExerciseWithoutLecture = localStorage.getItem('myScheduleAllowExerciseWithoutLecture') === 'true';
 
@@ -762,19 +761,14 @@
         document.getElementById('themeToggleBtn').innerHTML = effective === 'dark' ? sunSVG : moonSVG;
     }
 
-    // --- Dev mode (allow overlaps) — the header checkbox and the Settings
-    // dialog's checkbox both drive/reflect the same devModeAllowOverlaps
-    // flag, so either one always shows the true current state. ---
+    // --- Dev mode (allow overlaps) — lives only in the Settings dialog now
+    // (moved out of the main controls bar). setDevMode() stays the single
+    // entry point in case anything else ever needs to flip it programmatically. ---
     function setDevMode(checked) {
         devModeAllowOverlaps = checked;
         localStorage.setItem('myScheduleDevMode', devModeAllowOverlaps);
-        document.getElementById('devModeToggle').checked = checked;
         document.getElementById('settingsOverlapsToggle').checked = checked;
         updateUI(false);
-    }
-
-    function toggleDevMode() {
-        setDevMode(document.getElementById('devModeToggle').checked);
     }
 
     // --- Settings: allow choosing a תרגיל before/without a lecture ---
@@ -1794,7 +1788,16 @@
 
         const elementsByDay = { 'א': [], 'ב': [], 'ג': [], 'ד': [], 'ה': [] };
 
+        // While previewing a type, that type's real (already-added) groups
+        // are skipped here — their ghost below already represents them
+        // (with an "added" style and its own click-to-remove), so rendering
+        // both was a literal visual duplicate of the same block.
+        const previewedGroupIds = previewState
+            ? new Set(previewState.course.groups.filter((g) => g.type === previewState.type).map((g) => g.id))
+            : null;
+
         schedule.forEach(cls => {
+            if (previewedGroupIds && previewedGroupIds.has(cls.courseGroupId)) return;
             if(elementsByDay[cls.day]) elementsByDay[cls.day].push({ classData: cls, isGhost: false });
         });
 

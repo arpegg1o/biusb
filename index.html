@@ -82,19 +82,11 @@
                     <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 </button>
                 
-                <select id="semesterSelect" onchange="onSemesterChange()">
+                <select id="semesterSelect" onchange="onSemesterChange()" style="margin-right: auto;">
                     <option value="א'">סמסטר א'</option>
                     <option value="ב'">סמסטר ב'</option>
                     <option value="קיץ">קיץ</option>
                 </select>
-                
-                <label class="toggle-label" style="margin-right: auto; color: var(--danger);" title="מצב מפתח: מאפשר שיבוץ קורסים גם אם הם חופפים בשעות">
-                    <div class="switch">
-                        <input type="checkbox" id="devModeToggle" class="danger-switch" onchange="toggleDevMode()">
-                        <span class="slider"></span>
-                    </div>
-                    מצב מפתח (אפשר חפיפות)
-                </label>
 
                 <div class="legend">
                     <div class="legend-item"><span style="color: var(--icon-free); display: flex;"><svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></span> פנוי</div>
