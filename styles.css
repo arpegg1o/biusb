@@ -105,6 +105,31 @@
             background: rgba(128, 128, 128, 0.2);
         }
 
+        /* Quick "allow overlaps" switch — same top-corner row as the theme
+         * and settings buttons (left: 20px / 60px), so it reads as part of
+         * that group rather than being hidden inside the settings dialog. */
+        #overlapsQuickToggle {
+            position: absolute;
+            top: 20px;
+            left: 100px;
+            z-index: 20; /* see #themeToggleBtn's comment above */
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 5px 12px 5px 8px;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+            transition: background 0.2s, border-color 0.2s;
+        }
+        #overlapsQuickToggle:hover { background: var(--bg-alt); }
+        #overlapsQuickToggle:has(input:checked) { border-color: var(--danger); }
+        .quick-toggle-text { font-size: 13px; font-weight: bold; color: var(--text-main); white-space: nowrap; }
+
+        .page-title { text-align: center; margin-top: 0; }
+
         .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
         .settings-row:last-child { border-bottom: none; }
         .settings-row label:first-child { font-size: 14px; }
@@ -442,6 +467,15 @@
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
         .form-group input, .form-group select { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 5px; box-sizing: border-box; font-family: inherit; }
         .dialog-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+        /* Narrow screens: the corner controls (theme / settings / overlaps)
+         * are absolutely positioned over the top of the page, so drop the
+         * centered title below them instead of letting them overlap. */
+        @media (max-width: 700px) {
+            .quick-toggle-text { display: none; }
+            #overlapsQuickToggle { padding: 5px 8px; }
+            .page-title { margin-top: 46px; }
+        }
 
         /* Mobile Responsiveness */
         @media (max-width: 1600px) {

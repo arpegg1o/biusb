@@ -18,6 +18,19 @@
     <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
 </button>
 
+<!-- Quick "allow overlaps" switch, sitting right next to ⚙️ instead of only
+     inside the settings dialog. The whole thing is one <label> wrapping the
+     (invisible) checkbox, so clicking the slider OR the text toggles it —
+     see the note on the same switch in #settingsDialog below. Both switches
+     go through setDevMode(), which keeps them in sync. -->
+<label id="overlapsQuickToggle" title="אפשר חפיפות בין שיעורים (מצב מפתח)">
+    <span class="switch">
+        <input type="checkbox" id="quickOverlapsToggle" class="danger-switch" onchange="setDevMode(this.checked)">
+        <span class="slider"></span>
+    </span>
+    <span class="quick-toggle-text">אפשר חפיפות</span>
+</label>
+
 <!-- Calendar-preview control bar: shown instead of a plain list while picking
      a course's group (see startPreview() in app.js) — a plain fixed bar
      rather than a <dialog>, deliberately, so the real calendar underneath
@@ -25,7 +38,7 @@
 <div id="previewControlBar" class="preview-control-bar" style="display:none;"></div>
 
 <div class="container">
-    <h2 style="text-align: center; margin-top: 0;">מחולל מערכת שעות חכם</h2>
+    <h2 class="page-title">מחולל מערכת שעות חכם</h2>
     
     <div class="header-panel">
         <div class="search-box">

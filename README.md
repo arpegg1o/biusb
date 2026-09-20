@@ -77,6 +77,30 @@ python3 -m http.server 8123
   already-added course silently did nothing. Electives are tracked per
   course name (see `updateUI()`'s `nameStatusMap`), so toggling it now
   updates every one of that course's entries immediately.
+- **No cap on how many groups of a type you may pick**: any number of
+  הרצאה/תרגיל/… groups of a course can be chosen; they become alternatives,
+  and the solver still places exactly one of them in a schedule at a time.
+  Previously a second group whose hours matched an already-chosen one was
+  silently dropped by an over-broad duplicate check in
+  `toggleGroupInSchedule()` — that check now only stops the *same* group
+  being added twice.
+- **Identical groups are merged** (`getMergedGroups()`): groups of a course
+  that share a type, a semester and exactly the same meetings, and differ
+  only by lecturer, are offered as ONE option reading "קבוצה 01/02 —
+  name1/name2". The merged option keeps the first group's real id and
+  remembers the others (`mergedIds`), so add/remove/"already added" still
+  work for entries saved under any of them.
+- **Fixed**: changing the semester while a course picker was open left that
+  picker showing the old semester's groups — and the list dialog never
+  filtered by semester at all, so a course could be added to a semester it
+  isn't offered in. `onSemesterChange()` now calls `refreshCoursePickers()`
+  (re-renders the search dropdown, the list dialog and the preview bar, and
+  moves off a type the new semester doesn't have), the list dialog applies
+  the same semester rule as everything else, and `toggleGroupInSchedule()`
+  refuses an out-of-semester group as a last line of defence.
+- **Quick "אפשר חפיפות" switch** (`#overlapsQuickToggle`) next to the ⚙️
+  button, so overlaps can be turned on without opening Settings. It and the
+  settings switch both go through `setDevMode()` and stay in sync.
 
 ## Refreshing the data
 

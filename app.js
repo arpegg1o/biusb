@@ -212,6 +212,94 @@
         return `${h}:${m}`;
     }
 
+    // =====================================================================
+    // Group merging — a course sometimes lists what is, calendar-wise, the
+    // very same option twice: same type, same semester, exactly the same
+    // meetings, and nothing different but the lecturer. Those are one choice
+    // as far as a schedule is concerned, so they're merged into a single
+    // option whose lecturer reads "name1/name2" (and whose group code reads
+    // "01/02"). The merged option keeps the FIRST group's real id, and
+    // remembers every id it stands for (mergedIds), so adding, removing and
+    // "is it already added?" all keep working for entries that were saved
+    // under any one of them (including ones saved before this merging existed).
+    // =====================================================================
+    function isFridayOnlyGroup(group) {
+        // This site's calendar only has 5 day columns (Sun–Thu).
+        return group.meetings.length > 0 && group.meetings.every((m) => m.dayOfWeek === 5);
+    }
+
+    function meetingSignature(group) {
+        return group.meetings
+            .map((m) => `${m.dayOfWeek}-${m.startMinutes}-${m.endMinutes}`)
+            .sort()
+            .join('|');
+    }
+
+    function getMergedGroups(course) {
+        if (!course || !Array.isArray(course.groups)) return [];
+        if (course.__mergedGroups) return course.__mergedGroups;
+
+        const merged = [];
+        const byKey = new Map();
+
+        for (const g of course.groups) {
+            // Groups with no fixed hours have no times that could be "exactly
+            // the same", so each of those stays its own listed option.
+            const key = g.meetings.length === 0
+                ? null
+                : `${g.type}|${g.semester}|${meetingSignature(g)}`;
+            const existing = key ? byKey.get(key) : null;
+            const lecturer = (g.lecturerName || '').trim();
+            const code = (g.groupCode === undefined || g.groupCode === null) ? '' : String(g.groupCode);
+
+            if (existing) {
+                existing.mergedIds.push(g.id);
+                if (lecturer && !existing.lecturerNames.includes(lecturer)) existing.lecturerNames.push(lecturer);
+                if (code && !existing.groupCodes.includes(code)) existing.groupCodes.push(code);
+                continue;
+            }
+
+            const entry = Object.assign({}, g, {
+                mergedIds: [g.id],
+                lecturerNames: lecturer ? [lecturer] : [],
+                groupCodes: code ? [code] : [],
+            });
+            merged.push(entry);
+            if (key) byKey.set(key, entry);
+        }
+
+        merged.forEach((e) => {
+            e.lecturerName = e.lecturerNames.join('/');
+            e.groupCode = e.groupCodes.join('/');
+        });
+
+        // Non-enumerable so it never leaks into anything that serializes the
+        // cached course object.
+        Object.defineProperty(course, '__mergedGroups', { value: merged, enumerable: false });
+        return merged;
+    }
+
+    function mergedGroupIds(group) {
+        if (!group) return [];
+        return group.mergedIds || [group.id];
+    }
+
+    function isGroupIdInSchedule(id) {
+        return rawCourses.some((c) => (c.courseGroupId || c.id) === id);
+    }
+
+    function isGroupAdded(group) {
+        return mergedGroupIds(group).some(isGroupIdInSchedule);
+    }
+
+    /** Looks a (possibly merged) group up by any of the ids it stands for. */
+    function findMergedGroup(course, groupId) {
+        const groups = getMergedGroups(course);
+        return groups.find((g) => g.id === groupId)
+            || groups.find((g) => mergedGroupIds(g).includes(groupId))
+            || null;
+    }
+
     let currentSearchAddCourse = null; // set by renderSearchAddDialog, read by toggleGroupInSchedule
 
     function renderSearchAddDialog(course) {
@@ -229,21 +317,23 @@
         document.getElementById('searchAddElectiveToggle').checked = isCurrentlyElective;
 
         const groupsByType = {};
-        for (const g of course.groups) {
+        for (const g of getMergedGroups(course)) {
             if (g.type === 'other') continue; // never offered, matches CourseDetailPanel
-            if (g.meetings.length > 0 && g.meetings.every((m) => m.dayOfWeek === 5)) continue; // Friday-only, unsupported
+            // Same semester rule the calendar-preview picker and the search
+            // itself use — without it this list happily offered (and added)
+            // groups from a semester the student isn't even looking at.
+            if (!groupMatchesCurrentSemester(g)) continue;
+            if (isFridayOnlyGroup(g)) continue; // Friday-only, unsupported
             (groupsByType[g.type] = groupsByType[g.type] || []).push(g);
         }
 
-        const lectureChosen = groupsByType.lecture
-            ? groupsByType.lecture.some((g) => rawCourses.some((c) => (c.courseGroupId || c.id) === g.id))
-            : true;
+        const lectureChosen = isLectureChosen(course);
 
         const container = document.getElementById('searchAddGroups');
         container.innerHTML = SLOT_ORDER.filter((t) => groupsByType[t]).map((type) => {
             const locked = type === 'exercise' && !lectureChosen && !allowExerciseWithoutLecture;
             const rows = groupsByType[type].map((g) => {
-                const added = rawCourses.some((c) => (c.courseGroupId || c.id) === g.id);
+                const added = isGroupAdded(g);
                 const times = g.meetings
                     .filter((m) => DAY_LETTERS[m.dayOfWeek])
                     .map((m) => `יום ${DAY_LETTERS[m.dayOfWeek]}' ${formatMinutesToTime(m.startMinutes)}-${formatMinutesToTime(m.endMinutes)}`)
@@ -265,7 +355,7 @@
                     <h4>${TYPE_LABELS_HE[type]}${locked ? ' — בחרו הרצאה תחילה' : ''}</h4>
                     ${rows}
                 </div>`;
-        }).join('') || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות זמינות לקורס זה.</p>';
+        }).join('') || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות זמינות לקורס זה בסמסטר הנבחר.</p>';
     }
 
     // Fixes a real bug: toggling "סמן קורס זה כבחירה" used to only affect
@@ -298,19 +388,25 @@
 
     function toggleGroupInSchedule(groupId) {
         const course = currentSearchAddCourse;
-        const group = course && course.groups.find((g) => g.id === groupId);
+        const group = course && findMergedGroup(course, groupId);
         if (!group) return;
-        const courseId = course.id;
         const courseName = course.nameHe;
+        const ids = mergedGroupIds(group);
 
-        const alreadyAdded = rawCourses.some((c) => (c.courseGroupId || c.id) === group.id);
-
-        if (alreadyAdded) {
+        if (isGroupAdded(group)) {
             // Inlined rather than calling deleteCourseGroup() directly — that
             // function also calls updateUI() itself, which would run the
             // (somewhat expensive) schedule-solver worker twice for one click.
-            rawCourses = rawCourses.filter((c) => (c.courseGroupId || c.id) !== group.id);
+            rawCourses = rawCourses.filter((c) => !ids.includes(c.courseGroupId || c.id));
         } else {
+            // Belt and braces for the semester bug fixed in refreshCoursePickers():
+            // the pickers no longer OFFER a group from another semester, so this
+            // should be unreachable — but never silently add one if it is.
+            if (!groupMatchesCurrentSemester(group)) {
+                alert('קבוצה זו אינה מתקיימת בסמסטר הנבחר.');
+                return;
+            }
+
             const isElective = currentElectiveIntent();
             const type = TYPE_MAP[group.type];
             const semester = SEMESTER_MAP[group.semester] || "א'";
@@ -322,8 +418,14 @@
                 const start = formatMinutesToTime(m.startMinutes);
                 const end = formatMinutesToTime(m.endMinutes);
 
+                // Guards only against adding the very same meeting of the very
+                // same group twice. It deliberately does NOT look at other
+                // groups: there's no cap on how many הרצאה/תרגיל/… groups may
+                // be picked, and two different groups that happen to share a
+                // time are both allowed — they simply become alternatives, and
+                // the solver still places exactly one of them at a time.
                 const isDup = rawCourses.some((c) =>
-                    c.name === courseName && c.type === type && c.semester === semester &&
+                    (c.courseGroupId || c.id) === group.id &&
                     c.day === day && c.start === start && c.end === end);
                 if (isDup) continue;
 
@@ -387,7 +489,7 @@
         if (!previewState) return [];
         const { course, type } = previewState;
         const entries = [];
-        course.groups
+        getMergedGroups(course)
             .filter((g) => g.type === type && groupMatchesCurrentSemester(g))
             .forEach((g) => {
                 g.meetings.forEach((m) => {
@@ -397,6 +499,7 @@
                         day,
                         classData: {
                             id: g.id,
+                            __groupIds: mergedGroupIds(g),
                             name: course.nameHe,
                             type: TYPE_MAP[g.type],
                             lecturerName: g.lecturerName || '',
@@ -412,16 +515,20 @@
 
     function availablePreviewTypes(course) {
         const present = new Set(
-            course.groups.filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g)).map((g) => g.type),
+            getMergedGroups(course)
+                .filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g) && !isFridayOnlyGroup(g))
+                .map((g) => g.type),
         );
         return SLOT_ORDER.filter((t) => present.has(t));
     }
 
     function isLectureChosen(course) {
         const lectureGroupIds = course.groups
-            .filter((g) => g.type === 'lecture' && groupMatchesCurrentSemester(g))
+            .filter((g) => g.type === 'lecture' && groupMatchesCurrentSemester(g) && !isFridayOnlyGroup(g))
             .map((g) => g.id);
-        if (lectureGroupIds.length === 0) return true; // no lecture this semester — nothing to unlock
+        // No lecture offered this semester (or only unsupported Friday ones) —
+        // nothing to unlock, so an exercise must not stay locked forever.
+        if (lectureGroupIds.length === 0) return true;
         return rawCourses.some((c) => lectureGroupIds.includes(c.courseGroupId));
     }
 
@@ -505,14 +612,14 @@
         // choose them from a list" — groups of the active type with no
         // meetings at all can't be drawn as a calendar ghost, so they get a
         // small plain list here instead.
-        const noHourGroups = course.groups.filter(
+        const noHourGroups = getMergedGroups(course).filter(
             (g) => g.type === type && g.meetings.length === 0 && groupMatchesCurrentSemester(g),
         );
         const noHourHtml = noHourGroups.length ? `
             <div style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">
                 <p style="font-size:12px; color:var(--text-muted); margin:0 0 6px;">קבוצות ללא שעות קבועות:</p>
                 ${noHourGroups.map((g) => {
-                    const added = rawCourses.some((c) => (c.courseGroupId || c.id) === g.id);
+                    const added = isGroupAdded(g);
                     return `<div class="group-row ${added ? 'added' : ''}" style="margin-bottom:4px;">
                         <div><strong>קבוצה ${g.groupCode}</strong> — ${g.lecturerName || ''}</div>
                         <button class="btn-simple" style="padding:4px 10px; font-size:12px;" onclick="pickPreviewGroup('${g.id}')">${added ? 'הסרה' : 'הוספה'}</button>
@@ -541,7 +648,9 @@
             </div>
             <div style="display:flex; gap:6px; margin-top:10px; flex-wrap:wrap;">${tabsHtml}</div>
             ${noHourHtml}
-            <p style="font-size:12px; color:var(--text-muted); margin:8px 0 0;">לחצו על אחת האפשרויות המסומנות בלוח (המקווקוות) כדי לבחור אותה.</p>
+            ${types.length === 0
+                ? `<p style="font-size:12px; color:var(--danger); margin:8px 0 0;">לקורס זה אין קבוצות בסמסטר ${getCurrentSemester()}. החליפו סמסטר כדי לבחור ממנו קבוצות.</p>`
+                : '<p style="font-size:12px; color:var(--text-muted); margin:8px 0 0;">לחצו על אחת האפשרויות המסומנות בלוח (המקווקוות) כדי לבחור אותה. ניתן לבחור כמה אפשרויות מאותו הסוג — במערכת תוצג אחת מהן בכל פעם.</p>'}
         `;
 
         const groupIds = new Set(course.groups.map((g) => g.id));
@@ -755,6 +864,7 @@
         applyThemeMode(getThemeMode());
 
         devModeAllowOverlaps = localStorage.getItem('myScheduleDevMode') === 'true';
+        syncOverlapsToggles();
 
         allowExerciseWithoutLecture = localStorage.getItem('myScheduleAllowExerciseWithoutLecture') === 'true';
 
@@ -814,13 +924,21 @@
         document.getElementById('themeToggleBtn').innerHTML = effective === 'dark' ? sunSVG : moonSVG;
     }
 
-    // --- Dev mode (allow overlaps) — lives only in the Settings dialog now
-    // (moved out of the main controls bar). setDevMode() stays the single
-    // entry point in case anything else ever needs to flip it programmatically. ---
+    // --- Dev mode (allow overlaps) — reachable from two places: the quick
+    // switch next to the ⚙️ button (#quickOverlapsToggle, so it isn't buried
+    // in a dialog) and the Settings dialog itself. setDevMode() is the single
+    // entry point for both, and keeps them showing the same state. ---
+    function syncOverlapsToggles() {
+        const quick = document.getElementById('quickOverlapsToggle');
+        if (quick) quick.checked = devModeAllowOverlaps;
+        const inSettings = document.getElementById('settingsOverlapsToggle');
+        if (inSettings) inSettings.checked = devModeAllowOverlaps;
+    }
+
     function setDevMode(checked) {
         devModeAllowOverlaps = checked;
         localStorage.setItem('myScheduleDevMode', devModeAllowOverlaps);
-        document.getElementById('settingsOverlapsToggle').checked = checked;
+        syncOverlapsToggles();
         updateUI(false);
     }
 
@@ -840,7 +958,7 @@
     }
 
     function openSettingsDialog() {
-        document.getElementById('settingsOverlapsToggle').checked = devModeAllowOverlaps;
+        syncOverlapsToggles();
         document.getElementById('settingsExerciseWithoutLectureToggle').checked = allowExerciseWithoutLecture;
         const radio = document.querySelector(`input[name="settingsTheme"][value="${getThemeMode()}"]`);
         if (radio) radio.checked = true;
@@ -866,7 +984,33 @@
     }
 
     function getCurrentSemester() { return document.getElementById('semesterSelect').value; }
-    function onSemesterChange() { activeAlternativeKey = null; updateUI(false); }
+
+    /** Everything that offers groups to add is semester-scoped (the search
+     * dropdown, the list dialog, the calendar-preview bar). None of them used
+     * to be re-rendered when the semester picker changed, so a picker opened
+     * in one semester kept offering that semester's groups — and adding one
+     * put a course in a semester it doesn't belong to. Called on every
+     * semester change, for whichever of them happens to be open. */
+    function refreshCoursePickers() {
+        const dropdown = document.getElementById('searchResultsDropdown');
+        if (dropdown && dropdown.style.display !== 'none') onSearchInput();
+
+        const listDialog = document.getElementById('searchAddDialog');
+        if (listDialog && listDialog.open && currentSearchAddCourse) renderSearchAddDialog(currentSearchAddCourse);
+
+        if (previewState) {
+            // The type being previewed may not even exist in the new semester.
+            const types = availablePreviewTypes(previewState.course);
+            if (types.length > 0 && !types.includes(previewState.type)) previewState.type = types[0];
+            renderPreviewBar();
+        }
+    }
+
+    function onSemesterChange() {
+        activeAlternativeKey = null;
+        refreshCoursePickers();
+        updateUI(false); // re-runs the solver, then re-renders the calendar (ghosts included)
+    }
 
     function hexToRgba(hex, alpha) {
         let r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
@@ -1556,7 +1700,9 @@
         if (cls.__isPreviewGhost) {
             const el = document.createElement('div');
             const colors = getCourseStyle(cls.name, cls.type, null);
-            const added = rawCourses.some((c) => (c.courseGroupId || c.id) === cls.id);
+            // __groupIds covers merged groups (see getMergedGroups()): the ghost
+            // counts as chosen if ANY of the ids it stands for is in the schedule.
+            const added = (cls.__groupIds || [cls.id]).some(isGroupIdInSchedule);
             el.className = 'class-event ghost preview-ghost' + (added ? ' preview-ghost-added' : '');
             el.style.top = `${top}px`;
             el.style.height = `${height}px`;
