@@ -378,6 +378,22 @@
             background-size: 100% 50px;
         }
         .day-col:last-child { border-left: none; }
+
+        /* שישי (Friday) is always the last header-cell/day-col (see
+         * index.html) so it can piggyback on the :last-child rules above.
+         * Hidden by default; updateFridayVisibility() in app.js removes this
+         * class once Friday has content, or the "always show" setting is on.
+         * nth-last-child(2) is ה (Thursday) — since :nth-last-child counts
+         * DOM position, not what's rendered, this still targets ה correctly
+         * even while שישי itself is display:none. */
+        .calendar-wrapper.hide-friday .header-cell:last-child,
+        .calendar-wrapper.hide-friday .day-col:last-child {
+            display: none;
+        }
+        .calendar-wrapper.hide-friday .header-cell:nth-last-child(2),
+        .calendar-wrapper.hide-friday .day-col:nth-last-child(2) {
+            border-left: none;
+        }
         
         .time-slot { height: 50px; box-sizing: border-box; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 12px; padding: 5px; margin: 0; text-align: center;}
 

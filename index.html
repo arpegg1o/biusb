@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>מחולל מערכת שעות חכם</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=20260922">
 </head>
 <body>
 
@@ -108,7 +108,7 @@
                 </div>
             </div>
 
-            <div class="calendar-wrapper">
+            <div class="calendar-wrapper hide-friday">
                 <div class="calendar-headers">
                     <div class="header-cell time-hdr">שעה</div>
                     <div class="header-cell">ראשון (א')</div>
@@ -116,6 +116,13 @@
                     <div class="header-cell">שלישי (ג')</div>
                     <div class="header-cell">רביעי (ד')</div>
                     <div class="header-cell">חמישי (ה')</div>
+                    <!-- Hidden by default (see .calendar-wrapper.hide-friday in
+                         styles.css) — shown automatically once a course is
+                         added on Friday, or if "הצג תמיד את יום שישי" is on
+                         in Settings. Kept as the LAST header cell so the
+                         existing :last-child border rule keeps applying to
+                         whichever day is actually visually last. -->
+                    <div class="header-cell">שישי (ו')</div>
                 </div>
                 <div class="calendar-body" id="calendarBody">
                     <div class="time-col" id="timeGrid"></div>
@@ -124,6 +131,7 @@
                     <div class="day-col" id="day-ג" data-day="שלישי (ג')"></div>
                     <div class="day-col" id="day-ד" data-day="רביעי (ד')"></div>
                     <div class="day-col" id="day-ה" data-day="חמישי (ה')"></div>
+                    <div class="day-col" id="day-ו" data-day="שישי (ו')"></div>
                 </div>
             </div>
 
@@ -200,6 +208,7 @@
             <option value="ג">שלישי</option>
             <option value="ד">רביעי</option>
             <option value="ה">חמישי</option>
+            <option value="ו">שישי</option>
         </select>
     </div>
     <div style="display:flex; gap:10px;">
@@ -279,6 +288,17 @@
     </div>
 
     <div class="settings-row">
+        <span>הצג תמיד את יום שישי</span>
+        <!-- Friday is hidden by default and shows itself automatically the
+             moment a course lands on it (see updateFridayVisibility() in
+             app.js) — this forces it visible even when empty. -->
+        <label class="switch">
+            <input type="checkbox" id="settingsShowFridayToggle" onchange="setShowFridayAlways(this.checked)">
+            <span class="slider"></span>
+        </label>
+    </div>
+
+    <div class="settings-row">
         <label>ערכת נושא</label>
         <div class="theme-radio-group">
             <label><input type="radio" name="settingsTheme" value="light" onchange="setTheme('light')"> בהיר</label>
@@ -298,7 +318,9 @@
 </dialog>
 
 <script src="vendor/uFuzzy.iife.min.js"></script>
-<script src="app.js"></script>
+<!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
+     files aggressively can keep serving an old app.js after an update. -->
+<script src="app.js?v=20260922-2"></script>
 
 </body>
 </html>

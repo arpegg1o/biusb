@@ -69,9 +69,42 @@ python3 -m http.server 8123
   still work and stay in sync with these.
 - **קיץ (summer)** added as a third semester alongside א'/ב' — the real
   catalog has summer courses and the original site only modeled two.
-  **תגבור (reinforcement)** added as a type for the same reason. Friday-only
-  meetings are silently excluded, matching the original file's own
-  text-parser behavior (its calendar only has 5 day columns, Sun–Thu).
+  **תגבור (reinforcement)** added as a type for the same reason.
+- **שישי (Friday)** is a real sixth calendar column. It's hidden by default
+  (most courses never use it) and appears automatically the moment a course
+  lands there — via search, the "+" add-more button, or the manual edit
+  form's day dropdown — the same way א'-ה' always show. "הצג תמיד את יום
+  שישי" in Settings forces it visible even when empty. See
+  `updateFridayVisibility()`.
+- **Fixed**: the "paste a course" box's day-matching regexes were both
+  `[א-ה]` — a leftover from when Friday was unsupported — so a pasted
+  Friday meeting either silently failed to parse (new format) or, worse,
+  silently landed on יום ראשון instead (old format's fallback default).
+  Both now recognize `[א-ו]`. If you pasted a Friday course before this fix,
+  check your course list for an entry that landed on the wrong day and
+  remove it — nothing removes it automatically, since there's no reliable
+  way to tell it apart from a course you actually meant to put on Sunday.
+- **"+" button** next to the minus on every calendar box, and next to the
+  🗑️ in the course list, opens the same calendar-preview bar search does,
+  scoped to that course and defaulting to a part (הרצאה/תרגיל/…) it doesn't
+  have yet — so adding "the rest" of a course you started from search
+  doesn't mean going back through search. The bar's new "הוסף הכל" button
+  adds every remaining group of the course (every type, current semester)
+  in one click. See `openAddMoreForCourse()` / `addAllGroupsForCourse()`.
+  **Only works for courses added via search** — a pasted course's id is a
+  random local string, not a real catalog id, so there's no course to fetch
+  more parts of; the "+" simply doesn't render on those boxes.
+  The pencil (✏️) is the "+" button's counterpart: it now always opens the
+  plain structured edit form (עריכה ידנית — day/time/type/name, no catalog
+  lookup) for that one entry, for search-added and pasted courses alike.
+  Previously it reopened the calendar-preview bar (scoped to the box's own
+  type) for search-added courses specifically, which overlapped with what
+  "+" does and blocked the direct field-editing form. See `openEdit()`.
+- `index.html` now loads `styles.css` and `app.js` with a `?v=` query string
+  (bump it on every deploy). Without it, a browser or CDN that caches static
+  files aggressively can keep serving a stale copy after you update the
+  site — if a change doesn't seem to show up, hard-refresh
+  (Ctrl/Cmd+Shift+R) before assuming the code is wrong.
 - **Fixed**: marking a course "בחירה" (elective) via search only took effect
   for groups added *after* the checkbox was toggled — flipping it for an
   already-added course silently did nothing. Electives are tracked per

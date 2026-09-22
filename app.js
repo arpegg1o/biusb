@@ -14,6 +14,7 @@
     const editIconSVG = `<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2" fill="none"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>`;
     const searchIconSVG = `<svg viewBox="0 0 24 24" width="13" height="13" stroke="currentColor" stroke-width="2.5" fill="none"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
     const minusIconSVG = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"><line x1="5" y1="12" x2="19" y2="12"></line></svg>`;
+    const plusIconSVG = `<svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"><line x1="5" y1="12" x2="19" y2="12"></line><line x1="12" y1="5" x2="12" y2="19"></line></svg>`;
 
     const sunSVG = `<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
     const moonSVG = `<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`;
@@ -202,9 +203,11 @@
     const TYPE_LABELS_HE = { lecture: 'הרצאה', exercise: 'תרגיל', lab: 'מעבדה', seminar: 'סמינר', reinforcement: 'תגבור (רשות)' };
     const SLOT_ORDER = ['lecture', 'exercise', 'lab', 'seminar', 'reinforcement'];
     const SEMESTER_MAP = { a: "א'", b: "ב'", annual: 'שנתי', summer: 'קיץ' };
-    // This site's calendar only has 5 day columns (Sun-Thu) — Friday classes
-    // are excluded, same as this file's own text parser already does.
-    const DAY_LETTERS = ['א', 'ב', 'ג', 'ד', 'ה', null];
+    // This site's calendar has 6 day columns (Sun-Fri). שישי (index 5) is
+    // hidden by default (see updateFridayVisibility()) since most courses
+    // never use it, but it is a fully real column: a group that meets on
+    // Friday can be added like any other, and doing so reveals it.
+    const DAY_LETTERS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
 
     function formatMinutesToTime(mins) {
         const h = Math.floor(mins / 60).toString().padStart(2, '0');
@@ -223,11 +226,6 @@
     // "is it already added?" all keep working for entries that were saved
     // under any one of them (including ones saved before this merging existed).
     // =====================================================================
-    function isFridayOnlyGroup(group) {
-        // This site's calendar only has 5 day columns (Sun–Thu).
-        return group.meetings.length > 0 && group.meetings.every((m) => m.dayOfWeek === 5);
-    }
-
     function meetingSignature(group) {
         return group.meetings
             .map((m) => `${m.dayOfWeek}-${m.startMinutes}-${m.endMinutes}`)
@@ -323,7 +321,6 @@
             // itself use — without it this list happily offered (and added)
             // groups from a semester the student isn't even looking at.
             if (!groupMatchesCurrentSemester(g)) continue;
-            if (isFridayOnlyGroup(g)) continue; // Friday-only, unsupported
             (groupsByType[g.type] = groupsByType[g.type] || []).push(g);
         }
 
@@ -386,7 +383,10 @@
         // state is simply read at add-time by toggleGroupInSchedule() below.
     }
 
-    function toggleGroupInSchedule(groupId) {
+    /** `silent`: skip updateUI() and re-rendering the open picker — for
+     * callers (addAllGroupsForCourse()) that add several groups in a row and
+     * want exactly one solver run / re-render at the end, not one per group. */
+    function toggleGroupInSchedule(groupId, silent = false) {
         const course = currentSearchAddCourse;
         const group = course && findMergedGroup(course, groupId);
         if (!group) return;
@@ -414,7 +414,7 @@
 
             for (const m of group.meetings) {
                 const day = DAY_LETTERS[m.dayOfWeek];
-                if (!day) continue; // Friday — unsupported by this site's calendar
+                if (!day) continue; // shouldn't happen — every meeting maps to a day now (see DAY_LETTERS)
                 const start = formatMinutesToTime(m.startMinutes);
                 const end = formatMinutesToTime(m.endMinutes);
 
@@ -439,6 +439,8 @@
             }
             if (addedAny && isElective) activeElectives.add(courseName);
         }
+
+        if (silent) return;
 
         updateUI(true);
         // Re-render whichever picker is currently showing so it reflects the
@@ -494,7 +496,7 @@
             .forEach((g) => {
                 g.meetings.forEach((m) => {
                     const day = DAY_LETTERS[m.dayOfWeek];
-                    if (!day) return; // Friday — unsupported by this site's calendar
+                    if (!day) return; // out-of-range dayOfWeek in the data — shouldn't happen
                     entries.push({
                         day,
                         classData: {
@@ -516,7 +518,7 @@
     function availablePreviewTypes(course) {
         const present = new Set(
             getMergedGroups(course)
-                .filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g) && !isFridayOnlyGroup(g))
+                .filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g))
                 .map((g) => g.type),
         );
         return SLOT_ORDER.filter((t) => present.has(t));
@@ -524,10 +526,10 @@
 
     function isLectureChosen(course) {
         const lectureGroupIds = course.groups
-            .filter((g) => g.type === 'lecture' && groupMatchesCurrentSemester(g) && !isFridayOnlyGroup(g))
+            .filter((g) => g.type === 'lecture' && groupMatchesCurrentSemester(g))
             .map((g) => g.id);
-        // No lecture offered this semester (or only unsupported Friday ones) —
-        // nothing to unlock, so an exercise must not stay locked forever.
+        // No lecture offered this semester — nothing to unlock, so an
+        // exercise must not stay locked forever.
         if (lectureGroupIds.length === 0) return true;
         return rawCourses.some((c) => lectureGroupIds.includes(c.courseGroupId));
     }
@@ -592,6 +594,54 @@
         renderSearchAddDialog(course);
     }
 
+    /** The "+" button on a calendar box / course-list row: reopens the same
+     * calendar-preview bar search gives you (startPreview), scoped to this
+     * course, so the student can add a part of the course they don't have
+     * yet (or another alternative) without going back through search.
+     * Prefers a type the course has nothing added in yet — that's the whole
+     * point of "add other parts" — falling back to the clicked box's own
+     * type (so it still opens something sensible) if every type already has
+     * something added. */
+    async function openAddMoreForCourse(id) {
+        const c = rawCourses.find((x) => x.id === id);
+        if (!c) return;
+        const courseId = extractCourseIdFromGroupId(c.courseGroupId);
+        if (!courseId) return; // manual/pasted entry — no catalog to add more from
+        manualEditFallbackId = id;
+        try {
+            const course = await fetchCourseDetail(courseId);
+            const types = availablePreviewTypes(course);
+            const addedTypes = new Set(
+                rawCourses.filter((rc) => rc.name === course.nameHe).map((rc) => TYPE_MAP_REVERSE[rc.type]),
+            );
+            const missingType = types.find((t) => !addedTypes.has(t));
+            const clickedType = TYPE_MAP_REVERSE[c.type];
+            const initialType = missingType || (types.includes(clickedType) ? clickedType : types[0] || 'lecture');
+            startPreview(course, initialType);
+        } catch (err) {
+            alert('שגיאה בטעינת הקורס.');
+            console.error(err);
+        }
+    }
+
+    /** "הוסף הכל" in the preview bar — adds every group of this course, in
+     * the currently-selected semester, across every type, that isn't already
+     * in the schedule. There's no cap on how many groups of a type may be
+     * chosen (see toggleGroupInSchedule()), so this is safe: it just gives
+     * the solver every alternative to pick from, one at a time, per type. */
+    function addAllGroupsForCourse() {
+        if (!previewState) return;
+        const course = previewState.course;
+        currentSearchAddCourse = course;
+        const toAdd = getMergedGroups(course).filter(
+            (g) => g.type !== 'other' && groupMatchesCurrentSemester(g) && !isGroupAdded(g),
+        );
+        if (toAdd.length === 0) return;
+        toAdd.forEach((g) => toggleGroupInSchedule(g.id, /* silent */ true));
+        updateUI(true);
+        renderPreviewBar();
+    }
+
     function renderPreviewBar() {
         if (!previewState) return;
         const bar = document.getElementById('previewControlBar');
@@ -642,6 +692,7 @@
                         בחירה
                     </label>
                     ${manualEditFallbackId ? '<button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="openManualEditFromSearch()">עריכה ידנית</button>' : ''}
+                    <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="addAllGroupsForCourse()" title="הוסף את כל הקבוצות של הקורס בסמסטר הנוכחי (הרצאה, תרגיל, מעבדה וכו')">הוסף הכל</button>
                     <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="showListFromPreview()">תצוגת רשימה</button>
                     <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="exitPreview()">סיום</button>
                 </div>
@@ -867,6 +918,9 @@
         syncOverlapsToggles();
 
         allowExerciseWithoutLecture = localStorage.getItem('myScheduleAllowExerciseWithoutLecture') === 'true';
+        showFridayAlways = localStorage.getItem('myScheduleShowFridayAlways') === 'true';
+        const fridaySettingToggle = document.getElementById('settingsShowFridayToggle');
+        if (fridaySettingToggle) fridaySettingToggle.checked = showFridayAlways;
 
         const saved = localStorage.getItem('mySchedulesData');
         if (saved) rawCourses = JSON.parse(saved);
@@ -951,6 +1005,26 @@
         if (currentSearchAddCourse) renderSearchAddDialog(currentSearchAddCourse);
     }
 
+    // --- Settings: force-show the (by default auto-hidden) Friday column ---
+    let showFridayAlways = false;
+
+    function setShowFridayAlways(checked) {
+        showFridayAlways = checked;
+        localStorage.setItem('myScheduleShowFridayAlways', checked);
+        renderCalendar();
+    }
+
+    /** שישי is hidden by default (most courses never use it) and reveals
+     * itself the moment it's actually needed: `hasContent` is whether
+     * anything is currently drawn there (a real scheduled class, a
+     * preview ghost, or a shown alternative — renderCalendar() passes in
+     * elementsByDay['ו'].length > 0). The settings toggle forces it visible
+     * even when empty, the same way א'-ה' always show regardless of content. */
+    function updateFridayVisibility(hasContent) {
+        const wrapper = document.querySelector('.calendar-wrapper');
+        if (wrapper) wrapper.classList.toggle('hide-friday', !showFridayAlways && !hasContent);
+    }
+
     function resetAllCustomColors() {
         if (!confirm('לאפס את כל הצבעים המותאמים אישית שנשמרו לקורסים?')) return;
         rawCourses.forEach((c) => { c.color = null; });
@@ -960,6 +1034,7 @@
     function openSettingsDialog() {
         syncOverlapsToggles();
         document.getElementById('settingsExerciseWithoutLectureToggle').checked = allowExerciseWithoutLecture;
+        document.getElementById('settingsShowFridayToggle').checked = showFridayAlways;
         const radio = document.querySelector(`input[name="settingsTheme"][value="${getThemeMode()}"]`);
         if (radio) radio.checked = true;
         document.getElementById('settingsDialog').showModal();
@@ -1238,7 +1313,7 @@
                               if (semester === "שנת'") semester = "שנתי";
                           }
                       } else {
-                          const daysMatch = line.match(/^([א-ה]'?(?:\s*,\s*[א-ה]'?)*)/);
+                          const daysMatch = line.match(/^([א-ו]'?(?:\s*,\s*[א-ו]'?)*)/);
                           const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
                           
                           if (daysMatch) {
@@ -1304,7 +1379,7 @@
 
         chunks.forEach(chunk => {
             const parsed = parseChunkOld(chunk, forceElective);
-            if (parsed && parsed.day !== 'ו') { 
+            if (parsed) {
                 let isDup = rawCourses.some(c => 
                      c.name === parsed.name && c.type === parsed.type && c.semester === parsed.semester &&
                      c.day === parsed.day && c.start === parsed.start && c.end === parsed.end
@@ -1339,7 +1414,7 @@
         if(timeIndex < semIndex) return null;
         
         const between = chunk.substring(semIndex + semMatch[0].length, timeIndex);
-        const dayMatch = between.match(/([א-ה]'?)/);
+        const dayMatch = between.match(/([א-ו]'?)/);
         let day = dayMatch ? dayMatch[1].replace("'", "") : 'א';
         
         let isElective = forceElective || (chunk.includes('בחירה') && !chunk.includes('חובה'));
@@ -1888,7 +1963,7 @@
             }
 
             let buttonsHTML = `
-                <button class="box-btn" onclick="openEdit('${cls.id}')" title="ערוך קורס">${editIconSVG}</button>
+                <button class="box-btn" onclick="openEdit('${cls.id}')" title="עריכה ידנית (יום/שעה/סוג/שם)">${editIconSVG}</button>
                 <button class="box-btn ${status === 'locked' ? 'locked' : ''}" 
                         onclick="${status === 'locked' ? '' : `toggleAlternatives('${courseKey}')`}" 
                         title="${status === 'locked' ? 'נעול - אין אופציות אחרות' : 'הצג חלופות קיימות (או גרור את השיעור)'}" 
@@ -1901,6 +1976,22 @@
                 buttonsHTML = `
                     <button class="box-btn delete-btn" onclick="toggleSidebarElective('${cls.name}')" title="הסר קורס בחירה" style="color:var(--danger)">
                         ${minusIconSVG}
+                    </button>
+                    ${buttonsHTML}
+                `;
+            }
+
+            // "+" near the minus: lets you add other parts of this SAME course
+            // (a תרגיל you don't have yet, another lecture alternative, ...)
+            // without going back through search — opens the exact same
+            // calendar-preview bar search gives you (see startPreview()).
+            // Only courses that came from search/catalog have this (their
+            // courseGroupId decodes back to a real catalog course id); a
+            // manually-entered or pasted course has no catalog to add from.
+            if (extractCourseIdFromGroupId(cls.courseGroupId)) {
+                buttonsHTML = `
+                    <button class="box-btn" onclick="openAddMoreForCourse('${cls.id}')" title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">
+                        ${plusIconSVG}
                     </button>
                     ${buttonsHTML}
                 `;
@@ -1924,7 +2015,7 @@
     }
 
     function renderCalendar() {
-        const days = ['א', 'ב', 'ג', 'ד', 'ה'];
+        const days = DAY_LETTERS;
         days.forEach(day => document.getElementById(`day-${day}`).innerHTML = '');
         
         const timeGrid = document.getElementById('timeGrid');
@@ -1932,6 +2023,7 @@
 
         if (validSchedules.length === 0 && !previewState) {
             document.getElementById('calendarBody').style.height = '100px';
+            updateFridayVisibility(false);
             return;
         }
 
@@ -1986,7 +2078,7 @@
             timeGrid.appendChild(slot);
         }
 
-        const elementsByDay = { 'א': [], 'ב': [], 'ג': [], 'ד': [], 'ה': [] };
+        const elementsByDay = Object.fromEntries(days.map((d) => [d, []]));
 
         // While previewing a type, that type's real (already-added) groups
         // are skipped here — their ghost below already represents them
@@ -2020,6 +2112,8 @@
                 }
             });
         }
+
+        updateFridayVisibility(elementsByDay['ו'].length > 0);
 
         days.forEach(day => {
             const col = document.getElementById(`day-${day}`);
@@ -2138,7 +2232,10 @@
                 const row = document.createElement('div');
                 row.className = 'course-option-row';
                 
-                const editBtnHtml = sessions.length === 1 ? `<button class="icon-btn" onclick="openEdit('${first.id}')" title="ערוך">✏️</button>` : '';
+                const editBtnHtml = sessions.length === 1 ? `<button class="icon-btn" onclick="openEdit('${first.id}')" title="עריכה ידנית">✏️</button>` : '';
+                const addMoreBtnHtml = extractCourseIdFromGroupId(first.courseGroupId)
+                    ? `<button class="icon-btn" onclick="openAddMoreForCourse('${first.id}')" title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">➕</button>`
+                    : '';
 
                 row.innerHTML = `
                     <div style="font-size:14px; display:flex; align-items:flex-start; gap:10px;">
@@ -2150,6 +2247,7 @@
                     </div>
                     <div>
                         ${editBtnHtml}
+                        ${addMoreBtnHtml}
                         <button class="icon-btn" onclick="deleteCourseGroup('${first.courseGroupId || first.id}')" title="מחק שורה זו (ימחק את כל הימים של קבוצה זו)">🗑️</button>
                     </div>
                 `;
@@ -2193,42 +2291,27 @@
 
     // A courseGroupId that matches our real catalog's id scheme
     // ("<courseCode>-<year>-g<groupCode>", e.g. "66201-2027-g01") means this
-    // entry came from the search flow, not paste/manual entry — for those,
-    // "edit" should reopen the real course-selection screen (its actual
-    // lecture/exercise/etc. groups), not the generic structured form. See
-    // openEdit() below and README.md.
+    // entry came from the search flow, not paste/manual entry — only those
+    // can have "more parts" fetched from the catalog. See
+    // openAddMoreForCourse() (the "+" button) below and README.md.
     function extractCourseIdFromGroupId(groupId) {
         if (!groupId) return null;
         const match = String(groupId).match(/^(.+)-g[^-]+$/);
         return match ? match[1] : null;
     }
 
-    let manualEditFallbackId = null; // set only when reached via openEdit() on a search-based entry
+    let manualEditFallbackId = null; // set only when reached via openAddMoreForCourse() on a search-based entry
 
     const TYPE_MAP_REVERSE = Object.fromEntries(Object.entries(TYPE_MAP).map(([k, v]) => [v, k]));
 
+    // ✏️ always opens the plain structured form (עריכה ידנית) now, for every
+    // entry — search-based or pasted alike. Picking a different/extra group
+    // of a search-based course is the "+" button's job (openAddMoreForCourse,
+    // which opens the calendar-preview bar); the pencil is purely "edit this
+    // one row's fields directly."
     function openEdit(id) {
-        const c = rawCourses.find(c => c.id === id);
-        if (!c) return;
-        const courseId = extractCourseIdFromGroupId(c.courseGroupId);
-        if (courseId) {
-            openSearchEditDialog(courseId, id, TYPE_MAP_REVERSE[c.type] || 'lecture');
-        } else {
-            manualEditFallbackId = null;
-            openManualEditDialog(id);
-        }
-    }
-
-    async function openSearchEditDialog(courseId, manualFallbackId, initialType) {
-        manualEditFallbackId = manualFallbackId;
-        try {
-            const course = await fetchCourseDetail(courseId);
-            const types = availablePreviewTypes(course);
-            startPreview(course, types.includes(initialType) ? initialType : (types[0] || 'lecture'));
-        } catch (err) {
-            alert('שגיאה בטעינת הקורס.');
-            console.error(err);
-        }
+        manualEditFallbackId = null;
+        openManualEditDialog(id);
     }
 
     // "still allow to edit it manually" — a fallback out of the search-based
