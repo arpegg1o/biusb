@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>מחולל מערכת שעות חכם</title>
-    <link rel="stylesheet" href="styles.css?v=20260922">
+    <link rel="stylesheet" href="styles.css?v=20260923">
 </head>
 <body>
 
@@ -298,6 +298,27 @@
         </label>
     </div>
 
+    <div class="settings-row" style="flex-direction:column; align-items:stretch;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+            <span>סנן קורסים לפי מחלקה</span>
+            <label class="switch">
+                <input type="checkbox" id="settingsDeptFilterToggle" onchange="setDepartmentFilterEnabled(this.checked)">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <!-- Smart (fuzzy) department search, same engine as the main course
+             search box (see onDeptFilterSearchInput()) — always usable so the
+             chosen list can be built/edited whether or not the toggle above
+             is currently on; the toggle only controls whether it's APPLIED. -->
+        <div class="search-box" style="margin-top:10px;">
+            <input type="text" id="deptFilterSearchInput" autocomplete="off"
+                   placeholder="הקלידו שם מחלקה להוספה…"
+                   oninput="onDeptFilterSearchInput()" onfocus="onDeptFilterSearchInput()">
+            <div id="deptFilterResultsDropdown" class="search-results-dropdown" style="display:none;"></div>
+        </div>
+        <div id="deptFilterChips" class="dept-filter-chips"></div>
+    </div>
+
     <div class="settings-row">
         <label>ערכת נושא</label>
         <div class="theme-radio-group">
@@ -320,7 +341,7 @@
 <script src="vendor/uFuzzy.iife.min.js"></script>
 <!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
      files aggressively can keep serving an old app.js after an update. -->
-<script src="app.js?v=20260922-2"></script>
+<script src="app.js?v=20260923-1"></script>
 
 </body>
 </html>

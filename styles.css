@@ -182,6 +182,28 @@
         .search-result-name { font-weight: bold; }
         .search-result-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
         .search-empty, .search-loading { padding: 12px 14px; color: var(--text-muted); font-size: 13px; }
+        /* Bottom "load more" row in a search dropdown (see loadMoreSearchResults()) */
+        .search-more-item { text-align: center; color: var(--primary); font-weight: bold; }
+
+        /* List view (#searchAddDialog) — one section per semester the
+         * course is offered in (see renderGroupsBySemester()). */
+        .semester-section { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+        .semester-section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .semester-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .semester-section-header h3 { margin: 0; font-size: 15px; }
+        #searchAddDialog { max-width: 480px; max-height: 82vh; overflow-y: auto; }
+
+        /* Department-filter chips in Settings (see renderDeptFilterChips()) */
+        .dept-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .dept-filter-chip {
+            display: inline-flex; align-items: center; gap: 6px; background: var(--bg-alt);
+            border: 1px solid var(--border); border-radius: 14px; padding: 4px 6px 4px 12px; font-size: 12px;
+        }
+        .dept-filter-chip button {
+            background: none; border: none; cursor: pointer; color: var(--text-muted);
+            font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 50%;
+        }
+        .dept-filter-chip button:hover { color: var(--danger); background: rgba(220, 53, 69, 0.12); }
 
         /* Group picker (shown after choosing a search result) */
         .group-section { margin-bottom: 14px; }

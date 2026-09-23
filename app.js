@@ -66,6 +66,10 @@
 
     let catalogIndex = null;      // raw search-index.json entries
     let departmentNameById = new Map();
+    // Same {id, nameHe} rows as departmentNameById, plus a pre-normalized
+    // name for fuzzy search — backs the department-filter search box in
+    // Settings (see onDeptFilterSearchInput()).
+    let departmentsList = [];
     const courseDetailCache = new Map();
 
     async function loadCatalogIndex() {
@@ -75,12 +79,17 @@
                 fetch('data/departments.json'),
             ]);
             catalogIndex = await indexRes.json();
-            // The fuzzy-search haystack is built per-semester instead of once
-            // here — see getSemesterFilteredCatalog() — since only choosing
-            // courses from the currently selected semester is the point.
+            // The fuzzy-search haystack is built (and cached) separately —
+            // see getFilteredCatalog() — since it only needs rebuilding when
+            // the department filter changes, not on every keystroke.
 
             const departments = deptRes.ok ? await deptRes.json() : [];
             departmentNameById = new Map(departments.map((d) => [d.id, d.nameHe]));
+            departmentsList = departments.map((d) => ({ id: d.id, nameHe: d.nameHe, norm: normalizeForFuzzyMatch(d.nameHe) }));
+            // Chips in an already-open Settings dialog were rendered with
+            // raw ids (name lookup wasn't ready yet) — fill in real names
+            // now that it is.
+            renderDeptFilterChips();
         } catch (err) {
             console.error('Failed to load course catalog — search will be unavailable.', err);
             catalogIndex = [];
@@ -112,25 +121,55 @@
     }
 
     // Recomputing the fuzzy haystack for ~thousands of entries on every
-    // keystroke would be wasteful — cache the semester-filtered {index,
-    // haystack} pair and only rebuild it when the semester (or the loaded
-    // catalog itself) actually changes.
-    let filteredCatalogCache = { semester: undefined, sourceIndex: undefined, index: [], haystack: [] };
+    // keystroke would be wasteful — cache the department-filtered {index,
+    // haystack} pair and only rebuild it when the department filter (see
+    // Settings → "סנן קורסים לפי מחלקה") or the loaded catalog itself
+    // actually changes. Search deliberately does NOT restrict by the
+    // currently-selected semester (see getFilteredCatalog()) — a course
+    // offered in a semester you aren't currently looking at should still be
+    // findable; picking it just falls back to the list view (#searchAddDialog)
+    // if there's nothing to preview in the active semester, same as it
+    // already does when a course has no groups at all in that semester.
+    let filteredCatalogCache = { deptKey: undefined, sourceIndex: undefined, index: [], haystack: [] };
 
-    function getSemesterFilteredCatalog() {
-        const sem = getCurrentSemester();
-        if (filteredCatalogCache.semester === sem && filteredCatalogCache.sourceIndex === catalogIndex) {
+    /** '' when the department filter is off or has nothing selected (i.e.
+     * doesn't restrict anything); otherwise a stable, order-independent key
+     * for the chosen department ids, used only to know when to rebuild the
+     * cache above. */
+    function currentDeptFilterKey() {
+        if (!departmentFilterEnabled || departmentFilterIds.size === 0) return '';
+        return Array.from(departmentFilterIds).sort().join(',');
+    }
+
+    function getFilteredCatalog() {
+        const deptKey = currentDeptFilterKey();
+        if (filteredCatalogCache.deptKey === deptKey && filteredCatalogCache.sourceIndex === catalogIndex) {
             return filteredCatalogCache;
         }
-        const key = semesterKeyFromSelect(sem);
-        const index = (catalogIndex || []).filter(
-            (e) => !key || !e.semesters || e.semesters.includes(key) || e.semesters.includes('annual'),
-        );
+        const activeDeptIds = deptKey ? new Set(deptKey.split(',')) : null;
+        const index = (catalogIndex || []).filter((e) => !activeDeptIds || activeDeptIds.has(e.departmentId));
         const haystack = index.map((e) =>
             normalizeForFuzzyMatch(`${e.nameHeNorm} ${e.nameEnNorm || ''} ${e.lecturersNorm || ''} ${e.courseCode}`));
-        filteredCatalogCache = { semester: sem, sourceIndex: catalogIndex, index, haystack };
+        filteredCatalogCache = { deptKey, sourceIndex: catalogIndex, index, haystack };
         return filteredCatalogCache;
     }
+
+    // Results render a handful at a time with a trailing "עוד אפשרויות" row
+    // that reveals the next batch on click (loadMoreSearchResults()), rather
+    // than dumping everything at once — searchResultsCache itself always
+    // holds the full (capped) match set so "load more" never re-searches.
+    const SEARCH_PAGE_SIZE = 8;
+    const SEARCH_RESULTS_CAP = 200;
+    let searchVisibleCount = SEARCH_PAGE_SIZE;
+    // A course-code-style query: digits, optionally grouped with '-' or a
+    // space the way course codes are often written/remembered (e.g.
+    // "88-222", "88 222") — the grouping is purely visual, so it's stripped
+    // before matching and "88222" and "88-222" are treated identically.
+    const PLAIN_NUMBER_RE = /^[\d\s-]*\d[\d\s-]*$/;
+    /** Strips everything but digits from a course code, so a code stored
+     * with a '-' (e.g. "88-222") still matches a plain "88222" query and
+     * vice versa — the dash is just visual grouping, not part of the number. */
+    function normalizeCourseCodeDigits(code) { return String(code).replace(/\D+/g, ''); }
 
     function onSearchInput() {
         searchDropdownEl = searchDropdownEl || document.getElementById('searchResultsDropdown');
@@ -142,25 +181,52 @@
             return;
         }
 
-        const { index: semesterIndex, haystack: semesterHaystack } = getSemesterFilteredCatalog();
+        const { index: semesterIndex, haystack: semesterHaystack } = getFilteredCatalog();
 
         const query = searchInputEl.value.trim();
         let results;
         if (!query) {
-            results = semesterIndex.slice(0, 20);
+            results = semesterIndex.slice(0, SEARCH_RESULTS_CAP);
+        } else if (PLAIN_NUMBER_RE.test(query)) {
+            // "search by just a number" — a course code (e.g. "89111") is a
+            // single short numeric token, which uFuzzy's edit-distance
+            // scoring doesn't rank as reliably as free text. Match the code
+            // directly instead: exact/prefix matches first, then any code
+            // that merely contains the digits typed. '-'/spaces are just
+            // visual grouping (e.g. "88-222"), so they're stripped from BOTH
+            // sides before comparing — "88222" finds a course whose stored
+            // code is "88222" just as well as one stored as "88-222".
+            const digits = query.replace(/\D+/g, '');
+            results = semesterIndex
+                .filter((e) => normalizeCourseCodeDigits(e.courseCode).includes(digits))
+                .sort((a, b) => {
+                    const rank = (e) => {
+                        const codeDigits = normalizeCourseCodeDigits(e.courseCode);
+                        return codeDigits === digits ? 0 : codeDigits.startsWith(digits) ? 1 : 2;
+                    };
+                    const diff = rank(a) - rank(b);
+                    return diff !== 0 ? diff : a.courseCode.localeCompare(b.courseCode);
+                })
+                .slice(0, SEARCH_RESULTS_CAP);
         } else {
             const needle = normalizeForFuzzyMatch(query);
             const [idxs, info, order] = fuzzy.search(semesterHaystack, needle, undefined, 1000);
-            results = (!idxs || !info || !order) ? [] : order.slice(0, 30).map((i) => semesterIndex[info.idx[i]]);
+            results = (!idxs || !info || !order) ? [] : order.slice(0, SEARCH_RESULTS_CAP).map((i) => semesterIndex[info.idx[i]]);
         }
 
         searchResultsCache = results;
+        searchVisibleCount = SEARCH_PAGE_SIZE; // fresh query/input — reset "load more" progress
+        renderSearchDropdown();
+    }
+
+    function renderSearchDropdown() {
         searchDropdownEl.style.display = 'block';
-        if (results.length === 0) {
+        if (searchResultsCache.length === 0) {
             searchDropdownEl.innerHTML = '<div class="search-empty">לא נמצאו קורסים תואמים.</div>';
             return;
         }
-        searchDropdownEl.innerHTML = results.map((r, i) => {
+        const visible = searchResultsCache.slice(0, searchVisibleCount);
+        let html = visible.map((r, i) => {
             const dept = departmentNameById.get(r.departmentId);
             return `
             <div class="search-result-item" onclick="selectSearchResult(${i})">
@@ -169,14 +235,34 @@
             </div>
         `;
         }).join('');
+        if (searchResultsCache.length > searchVisibleCount) {
+            html += `<div class="search-result-item search-more-item" onclick="loadMoreSearchResults()">עוד אפשרויות…</div>`;
+        }
+        searchDropdownEl.innerHTML = html;
     }
 
+    /** Bottom "עוד אפשרויות" row — reveals the next page of the already-
+     * computed searchResultsCache, no re-search needed. */
+    function loadMoreSearchResults() {
+        searchVisibleCount += SEARCH_PAGE_SIZE;
+        renderSearchDropdown();
+    }
+
+    // Any search-results dropdown (the main course search, and the
+    // department-filter search in Settings) closes when a click lands
+    // outside its own .search-box wrapper. Uses composedPath() rather than
+    // e.target.closest(): a click on a row that re-renders the dropdown
+    // (e.g. "עוד אפשרויות" replacing the list with more results) detaches
+    // the clicked element from the DOM WHILE the click is still bubbling —
+    // at that point e.target.closest() can no longer find its (now former)
+    // ancestors and wrongly treats the click as "outside", closing the very
+    // dropdown that just re-rendered. composedPath() was captured before
+    // any of that happened, so it isn't affected.
     document.addEventListener('click', (e) => {
-        const box = document.querySelector('.search-box');
-        if (box && !box.contains(e.target)) {
-            const dd = document.getElementById('searchResultsDropdown');
-            if (dd) dd.style.display = 'none';
-        }
+        const path = e.composedPath ? e.composedPath() : [];
+        const insideSearchBox = path.some((el) => el.classList && el.classList.contains('search-box'));
+        if (insideSearchBox) return;
+        document.querySelectorAll('.search-results-dropdown').forEach((dd) => { dd.style.display = 'none'; });
     });
 
     async function selectSearchResult(index) {
@@ -314,46 +400,123 @@
         const isCurrentlyElective = rawCourses.some((c) => groupIds.has(c.courseGroupId) && c.isElective);
         document.getElementById('searchAddElectiveToggle').checked = isCurrentlyElective;
 
-        const groupsByType = {};
+        const container = document.getElementById('searchAddGroups');
+        container.innerHTML = renderGroupsBySemester(course)
+            || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות זמינות לקורס זה.</p>';
+    }
+
+    // Real semester keys first (SEMESTER_MAP order), "annual" last since it
+    // isn't really "a semester" of its own — it spans both א'/ב'.
+    const SEMESTER_LIST_ORDER = ['a', 'b', 'summer', 'annual'];
+
+    /** The list view (#searchAddDialog) shows EVERY semester the course is
+     * offered in at once, each clearly labeled and with its own "הוסף הכל" —
+     * unlike the calendar-preview picker (and its own "הוסף הכל", see
+     * addAllGroupsForCourse()), which only ever deals with the currently
+     * selected semester. Selecting/removing a group here is therefore always
+     * allowed regardless of which semester is currently active (see the
+     * `true` passed to toggleGroupInSchedule() below). */
+    function renderGroupsBySemester(course) {
+        const bySemester = {};
         for (const g of getMergedGroups(course)) {
             if (g.type === 'other') continue; // never offered, matches CourseDetailPanel
-            // Same semester rule the calendar-preview picker and the search
-            // itself use — without it this list happily offered (and added)
-            // groups from a semester the student isn't even looking at.
-            if (!groupMatchesCurrentSemester(g)) continue;
-            (groupsByType[g.type] = groupsByType[g.type] || []).push(g);
+            (bySemester[g.semester] = bySemester[g.semester] || []).push(g);
         }
 
-        const lectureChosen = isLectureChosen(course);
+        return SEMESTER_LIST_ORDER.filter((sem) => bySemester[sem] && bySemester[sem].length).map((sem) => {
+            const groupsByType = {};
+            bySemester[sem].forEach((g) => { (groupsByType[g.type] = groupsByType[g.type] || []).push(g); });
 
-        const container = document.getElementById('searchAddGroups');
-        container.innerHTML = SLOT_ORDER.filter((t) => groupsByType[t]).map((type) => {
-            const locked = type === 'exercise' && !lectureChosen && !allowExerciseWithoutLecture;
-            const rows = groupsByType[type].map((g) => {
-                const added = isGroupAdded(g);
-                const times = g.meetings
-                    .filter((m) => DAY_LETTERS[m.dayOfWeek])
-                    .map((m) => `יום ${DAY_LETTERS[m.dayOfWeek]}' ${formatMinutesToTime(m.startMinutes)}-${formatMinutesToTime(m.endMinutes)}`)
-                    .join(', ');
+            // "Lecture chosen" is evaluated per semester section, not just
+            // for whichever semester happens to be selected in the header —
+            // otherwise an exercise here could look permanently locked (or
+            // wrongly unlocked) while looking at a semester that isn't active.
+            const lectureGroupIds = (groupsByType.lecture || []).map((g) => g.id);
+            const lectureChosen = lectureGroupIds.length === 0
+                || rawCourses.some((c) => lectureGroupIds.includes(c.courseGroupId));
+
+            const typeSections = SLOT_ORDER.filter((t) => groupsByType[t]).map((type) => {
+                const locked = type === 'exercise' && !lectureChosen && !allowExerciseWithoutLecture;
+                const rows = groupsByType[type].map((g) => {
+                    const added = isGroupAdded(g);
+                    const times = g.meetings
+                        .filter((m) => DAY_LETTERS[m.dayOfWeek])
+                        .map((m) => `יום ${DAY_LETTERS[m.dayOfWeek]}' ${formatMinutesToTime(m.startMinutes)}-${formatMinutesToTime(m.endMinutes)}`)
+                        .join(', ');
+                    return `
+                        <div class="group-row ${added ? 'added' : ''}">
+                            <div>
+                                <div><strong>קבוצה ${g.groupCode}</strong> — ${g.lecturerName || ''}</div>
+                                <div style="color:var(--text-muted); font-size:12px;" dir="ltr">${times || '(ללא שעות)'}</div>
+                            </div>
+                            <button class="btn-simple" style="padding:6px 12px; font-size:13px;"
+                                    onclick="toggleGroupInSchedule('${g.id}', false, true)">
+                                ${added ? 'הסרה' : 'הוספה'}
+                            </button>
+                        </div>`;
+                }).join('');
                 return `
-                    <div class="group-row ${added ? 'added' : ''}">
-                        <div>
-                            <div><strong>קבוצה ${g.groupCode}</strong> — ${g.lecturerName || ''}</div>
-                            <div style="color:var(--text-muted); font-size:12px;" dir="ltr">${times || '(ללא שעות)'}</div>
-                        </div>
-                        <button class="btn-simple" style="padding:6px 12px; font-size:13px;"
-                                onclick="toggleGroupInSchedule('${g.id}')">
-                            ${added ? 'הסרה' : 'הוספה'}
-                        </button>
+                    <div class="group-section ${locked ? 'group-locked' : ''}">
+                        <h4>${TYPE_LABELS_HE[type]}${locked ? ' — בחרו הרצאה תחילה' : ''}</h4>
+                        ${rows}
                     </div>`;
             }).join('');
+
+            // "הוסף הכל" / "הסר הכל" for this semester section — flips to
+            // "remove" once every group of this course, in this semester, is
+            // already added (nothing left for "add all" to do).
+            const allSemGroups = bySemester[sem];
+            const allSemAdded = allSemGroups.every(isGroupAdded);
+            const addAllBtnHtml = allSemAdded
+                ? `<button class="btn-simple" style="padding:5px 10px; font-size:12px;"
+                        onclick="removeAllGroupsForCourseInSemester('${sem}')"
+                        title="הסר את כל הקבוצות של הקורס בסמסטר ${SEMESTER_MAP[sem] || sem}">הסר הכל</button>`
+                : `<button class="btn-simple" style="padding:5px 10px; font-size:12px;"
+                        onclick="addAllGroupsForCourseInSemester('${sem}')"
+                        title="הוסף את כל הקבוצות של הקורס בסמסטר ${SEMESTER_MAP[sem] || sem}">הוסף הכל</button>`;
+
             return `
-                <div class="group-section ${locked ? 'group-locked' : ''}">
-                    <h4>${TYPE_LABELS_HE[type]}${locked ? ' — בחרו הרצאה תחילה' : ''}</h4>
-                    ${rows}
+                <div class="semester-section">
+                    <div class="semester-section-header">
+                        <h3>${SEMESTER_MAP[sem] || sem}</h3>
+                        ${addAllBtnHtml}
+                    </div>
+                    ${typeSections}
                 </div>`;
-        }).join('') || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות זמינות לקורס זה בסמסטר הנבחר.</p>';
+        }).join('');
     }
+
+    /** The list view's per-semester "הוסף הכל" — adds every group of the
+     * course in THIS semester specifically, whichever semester that is,
+     * regardless of what's currently selected in the header. Distinct from
+     * addAllGroupsForCourse() (the calendar-preview bar's "הוסף הכל"), which
+     * only ever touches the currently-selected semester. */
+    function addAllGroupsForCourseInSemester(semesterKey) {
+        const course = currentSearchAddCourse;
+        if (!course) return;
+        const toAdd = getMergedGroups(course).filter(
+            (g) => g.type !== 'other' && g.semester === semesterKey && !isGroupAdded(g),
+        );
+        if (toAdd.length === 0) return;
+        toAdd.forEach((g) => toggleGroupInSchedule(g.id, /* silent */ true, /* allowAnySemester */ true));
+        updateUI(true);
+        renderSearchAddDialog(course);
+    }
+
+    /** The button's other face once every group in this semester is already
+     * added — "הוסף הכל" turns into "הסר הכל" so one click undoes it. */
+    function removeAllGroupsForCourseInSemester(semesterKey) {
+        const course = currentSearchAddCourse;
+        if (!course) return;
+        const toRemove = getMergedGroups(course).filter(
+            (g) => g.type !== 'other' && g.semester === semesterKey && isGroupAdded(g),
+        );
+        if (toRemove.length === 0) return;
+        toRemove.forEach((g) => toggleGroupInSchedule(g.id, /* silent */ true, /* allowAnySemester */ true));
+        updateUI(true);
+        renderSearchAddDialog(course);
+    }
+
 
     // Fixes a real bug: toggling "סמן קורס זה כבחירה" used to only affect
     // groups added AFTER the toggle — flipping it for an already-added
@@ -384,9 +547,14 @@
     }
 
     /** `silent`: skip updateUI() and re-rendering the open picker — for
-     * callers (addAllGroupsForCourse()) that add several groups in a row and
-     * want exactly one solver run / re-render at the end, not one per group. */
-    function toggleGroupInSchedule(groupId, silent = false) {
+     * callers (addAllGroupsForCourse(), addAllGroupsForCourseInSemester())
+     * that add several groups in a row and want exactly one solver run /
+     * re-render at the end, not one per group.
+     * `allowAnySemester`: skip the "belt and braces" current-semester guard
+     * below — used by the list view (#searchAddDialog), which now shows and
+     * intentionally lets you add groups from every semester at once, not
+     * just whichever one is currently selected in the header. */
+    function toggleGroupInSchedule(groupId, silent = false, allowAnySemester = false) {
         const course = currentSearchAddCourse;
         const group = course && findMergedGroup(course, groupId);
         if (!group) return;
@@ -400,9 +568,12 @@
             rawCourses = rawCourses.filter((c) => !ids.includes(c.courseGroupId || c.id));
         } else {
             // Belt and braces for the semester bug fixed in refreshCoursePickers():
-            // the pickers no longer OFFER a group from another semester, so this
-            // should be unreachable — but never silently add one if it is.
-            if (!groupMatchesCurrentSemester(group)) {
+            // the calendar-preview picker no longer OFFERS a group from another
+            // semester, so this should be unreachable there — but never silently
+            // add one by accident if it somehow is. The list view deliberately
+            // bypasses this (allowAnySemester) since it offers every semester on
+            // purpose.
+            if (!allowAnySemester && !groupMatchesCurrentSemester(group)) {
                 alert('קבוצה זו אינה מתקיימת בסמסטר הנבחר.');
                 return;
             }
@@ -642,6 +813,22 @@
         renderPreviewBar();
     }
 
+    /** The button's other face once everything is already added — "הוסף הכל"
+     * turns into "הסר הכל" (see the button markup in renderPreviewBar()) so
+     * one click can undo an "add all" just as easily as it applied one. */
+    function removeAllGroupsForCourse() {
+        if (!previewState) return;
+        const course = previewState.course;
+        currentSearchAddCourse = course;
+        const toRemove = getMergedGroups(course).filter(
+            (g) => g.type !== 'other' && groupMatchesCurrentSemester(g) && isGroupAdded(g),
+        );
+        if (toRemove.length === 0) return;
+        toRemove.forEach((g) => toggleGroupInSchedule(g.id, /* silent */ true));
+        updateUI(true);
+        renderPreviewBar();
+    }
+
     function renderPreviewBar() {
         if (!previewState) return;
         const bar = document.getElementById('previewControlBar');
@@ -677,6 +864,18 @@
                 }).join('')}
             </div>` : '';
 
+        // "הוסף הכל" / "הסר הכל" — the same button flips between adding
+        // everything left to add and removing everything once there's
+        // nothing left TO add (i.e. every group of this course, this
+        // semester, is already in the schedule).
+        const allSemesterGroups = getMergedGroups(course).filter((g) => g.type !== 'other' && groupMatchesCurrentSemester(g));
+        const allAdded = allSemesterGroups.length > 0 && allSemesterGroups.every(isGroupAdded);
+        const addAllBtnHtml = allSemesterGroups.length === 0
+            ? `<button class="btn-simple" style="padding:6px 10px; font-size:12px;" disabled title="לקורס זה אין קבוצות בסמסטר הנוכחי">הוסף הכל</button>`
+            : allAdded
+                ? `<button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="removeAllGroupsForCourse()" title="הסר את כל הקבוצות של הקורס בסמסטר הנוכחי">הסר הכל</button>`
+                : `<button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="addAllGroupsForCourse()" title="הוסף את כל הקבוצות של הקורס בסמסטר הנוכחי (הרצאה, תרגיל, מעבדה וכו')">הוסף הכל</button>`;
+
         bar.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <div>
@@ -692,7 +891,7 @@
                         בחירה
                     </label>
                     ${manualEditFallbackId ? '<button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="openManualEditFromSearch()">עריכה ידנית</button>' : ''}
-                    <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="addAllGroupsForCourse()" title="הוסף את כל הקבוצות של הקורס בסמסטר הנוכחי (הרצאה, תרגיל, מעבדה וכו')">הוסף הכל</button>
+                    ${addAllBtnHtml}
                     <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="showListFromPreview()">תצוגת רשימה</button>
                     <button class="btn-simple" style="padding:6px 10px; font-size:12px;" onclick="exitPreview()">סיום</button>
                 </div>
@@ -922,6 +1121,14 @@
         const fridaySettingToggle = document.getElementById('settingsShowFridayToggle');
         if (fridaySettingToggle) fridaySettingToggle.checked = showFridayAlways;
 
+        departmentFilterEnabled = localStorage.getItem('myScheduleDeptFilterEnabled') === 'true';
+        try {
+            const savedDeptIds = localStorage.getItem('myScheduleDeptFilterIds');
+            if (savedDeptIds) departmentFilterIds = new Set(JSON.parse(savedDeptIds));
+        } catch (err) {
+            console.error('Failed to parse saved department filter — ignoring it.', err);
+        }
+
         const saved = localStorage.getItem('mySchedulesData');
         if (saved) rawCourses = JSON.parse(saved);
         
@@ -1025,6 +1232,89 @@
         if (wrapper) wrapper.classList.toggle('hide-friday', !showFridayAlways && !hasContent);
     }
 
+    // --- Settings: restrict the course search to chosen departments ---
+    // Toggling this on/off only changes whether the filter is APPLIED —
+    // the chosen department ids are saved (and stay selectable/removable)
+    // regardless of the toggle state.
+    let departmentFilterEnabled = false;
+    let departmentFilterIds = new Set(); // department id strings
+    let deptFilterResultsCache = [];
+
+    function setDepartmentFilterEnabled(checked) {
+        departmentFilterEnabled = checked;
+        localStorage.setItem('myScheduleDeptFilterEnabled', checked);
+        refreshCoursePickers(); // re-run the course search if it's open, so the effect is immediate
+    }
+
+    function saveDeptFilterIds() {
+        localStorage.setItem('myScheduleDeptFilterIds', JSON.stringify(Array.from(departmentFilterIds)));
+    }
+
+    /** The department picker in Settings — same smart (fuzzy) search as the
+     * main course search box, just over department names instead of
+     * courses. Already-selected departments are excluded from results. */
+    function onDeptFilterSearchInput() {
+        const input = document.getElementById('deptFilterSearchInput');
+        const dropdown = document.getElementById('deptFilterResultsDropdown');
+        if (!input || !dropdown) return;
+
+        const pool = departmentsList.filter((d) => !departmentFilterIds.has(d.id));
+        const query = input.value.trim();
+        let results;
+        if (!query) {
+            results = pool.slice(0, 20);
+        } else {
+            const needle = normalizeForFuzzyMatch(query);
+            const haystack = pool.map((d) => d.norm);
+            const [idxs, info, order] = fuzzy.search(haystack, needle, undefined, 1000);
+            results = (!idxs || !info || !order) ? [] : order.slice(0, 20).map((i) => pool[info.idx[i]]);
+        }
+
+        deptFilterResultsCache = results;
+        dropdown.style.display = 'block';
+        if (results.length === 0) {
+            dropdown.innerHTML = '<div class="search-empty">לא נמצאו מחלקות תואמות.</div>';
+            return;
+        }
+        dropdown.innerHTML = results.map((d, i) =>
+            `<div class="search-result-item" onclick="selectDeptFilterResult(${i})">
+                <div class="search-result-name">${d.nameHe}</div>
+            </div>`).join('');
+    }
+
+    function selectDeptFilterResult(i) {
+        const d = deptFilterResultsCache[i];
+        if (!d) return;
+        departmentFilterIds.add(d.id);
+        saveDeptFilterIds();
+        const input = document.getElementById('deptFilterSearchInput');
+        if (input) input.value = '';
+        const dropdown = document.getElementById('deptFilterResultsDropdown');
+        if (dropdown) dropdown.style.display = 'none';
+        renderDeptFilterChips();
+        refreshCoursePickers();
+    }
+
+    function removeDeptFilterChip(id) {
+        departmentFilterIds.delete(id);
+        saveDeptFilterIds();
+        renderDeptFilterChips();
+        refreshCoursePickers();
+    }
+
+    function renderDeptFilterChips() {
+        const el = document.getElementById('deptFilterChips');
+        if (!el) return;
+        if (departmentFilterIds.size === 0) {
+            el.innerHTML = '<p style="color:var(--text-muted); font-size:12px; margin:8px 0 0;">לא נבחרו מחלקות — הסינון לא יגביל דבר כל עוד הרשימה ריקה.</p>';
+            return;
+        }
+        el.innerHTML = Array.from(departmentFilterIds).map((id) => {
+            const name = departmentNameById.get(id) || id;
+            return `<span class="dept-filter-chip">${name}<button type="button" onclick="removeDeptFilterChip('${id}')" title="הסרה">×</button></span>`;
+        }).join('');
+    }
+
     function resetAllCustomColors() {
         if (!confirm('לאפס את כל הצבעים המותאמים אישית שנשמרו לקורסים?')) return;
         rawCourses.forEach((c) => { c.color = null; });
@@ -1035,6 +1325,8 @@
         syncOverlapsToggles();
         document.getElementById('settingsExerciseWithoutLectureToggle').checked = allowExerciseWithoutLecture;
         document.getElementById('settingsShowFridayToggle').checked = showFridayAlways;
+        document.getElementById('settingsDeptFilterToggle').checked = departmentFilterEnabled;
+        renderDeptFilterChips();
         const radio = document.querySelector(`input[name="settingsTheme"][value="${getThemeMode()}"]`);
         if (radio) radio.checked = true;
         document.getElementById('settingsDialog').showModal();
