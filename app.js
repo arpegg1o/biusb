@@ -2997,11 +2997,18 @@
                 });
             }
 
+            const isLocked = status === 'locked';
+
             let buttonsHTML = `
-                <button class="box-btn" onclick="openEdit('${cls.id}')" title="עריכה ידנית (יום/שעה/סוג/שם)">${editIconSVG}</button>
-                <button class="box-btn ${status === 'locked' ? 'locked' : ''}" 
-                        onclick="${status === 'locked' ? '' : `toggleAlternatives('${courseKey}')`}" 
-                        title="${status === 'locked' ? 'נעול - אין אופציות אחרות' : 'הצג חלופות קיימות (או גרור את השיעור)'}" 
+                <button type="button" class="box-btn" 
+                        onclick="event.stopPropagation(); openEdit('${cls.id}')" 
+                        onpointerdown="event.stopPropagation()"
+                        title="עריכה ידנית (יום/שעה/סוג/שם)">${editIconSVG}</button>
+                <button type="button" class="box-btn ${isLocked ? 'locked' : ''}" 
+                        ${isLocked ? 'aria-disabled="true"' : ''}
+                        onclick="event.stopPropagation(); ${isLocked ? 'event.preventDefault();' : `toggleAlternatives('${courseKey}')`}" 
+                        onpointerdown="event.stopPropagation()"
+                        title="${isLocked ? 'נעול - אין אופציות אחרות' : 'הצג חלופות קיימות (או גרור את השיעור)'}" 
                         style="color: ${statusColor};">
                     ${searchIconSVG}
                 </button>
@@ -3009,23 +3016,22 @@
 
             if (cls.isElective) {
                 buttonsHTML = `
-                    <button class="box-btn delete-btn" onclick="toggleSidebarElective('${cls.name}')" title="הסר קורס בחירה" style="color:var(--danger)">
+                    <button type="button" class="box-btn delete-btn" 
+                            onclick="event.stopPropagation(); toggleSidebarElective('${cls.name}')" 
+                            onpointerdown="event.stopPropagation()"
+                            title="הסר קורס בחירה" style="color:var(--danger)">
                         ${minusIconSVG}
                     </button>
                     ${buttonsHTML}
                 `;
             }
 
-            // "+" near the minus: lets you add other parts of this SAME course
-            // (a תרגיל you don't have yet, another lecture alternative, ...)
-            // without going back through search — opens the exact same
-            // calendar-preview bar search gives you (see startPreview()).
-            // Only courses that came from search/catalog have this (their
-            // courseGroupId decodes back to a real catalog course id); a
-            // manually-entered or pasted course has no catalog to add from.
             if (extractCourseIdFromGroupId(cls.courseGroupId)) {
                 buttonsHTML = `
-                    <button class="box-btn" onclick="openAddMoreForCourse('${cls.id}')" title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">
+                    <button type="button" class="box-btn" 
+                            onclick="event.stopPropagation(); openAddMoreForCourse('${cls.id}')" 
+                            onpointerdown="event.stopPropagation()"
+                            title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">
                         ${plusIconSVG}
                     </button>
                     ${buttonsHTML}
@@ -3671,13 +3677,10 @@
     }
 
     function toggleFullScreen() {
-        if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(err => {
-                console.warn(`Fullscreen request failed: ${err.message}`);
-            });
-        } else {
-            if (document.exitFullscreen) {
-                document.exitFullscreen();
-            }
+        document.body.classList.toggle('schedule-only-mode');
+        
+        // Automatically re-fit the table to the screen now that the sidebars/padding are gone
+        if (document.body.classList.contains('force-table-view')) {
+            setTimeout(fitTableToScreen, 50); 
         }
     }

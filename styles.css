@@ -19,7 +19,7 @@
             --icon-active: #3498db;
             --icon-free: #27ae60;      
             --icon-conditional: #e67e22; 
-            --icon-locked: #bdc3c7;      
+            --icon-locked: #7f8c8d;      
 
             --text-main: #333333;
             --text-muted: #666666;
@@ -35,6 +35,7 @@
             --text-main: #e0e0e0;
             --text-muted: #aaaaaa;
             --bg-alt: #2c2c2c;
+            --icon-locked: #6c757d;
         }
         
         /* NOTE: .class-event's own text color is set inline per-element in
@@ -619,13 +620,86 @@
         .class-type { font-size: clamp(8px, 10cqw, 10px); background: rgba(0,0,0,0.4); color: white; padding: 1px 4px; border-radius: 10px; display: inline-block;}
         .elective-badge { font-size: clamp(8px, 10cqw, 10px); background: var(--icon-conditional); color: white; padding: 1px 4px; border-radius: 10px; display: inline-block; }
         
+        /* Container for action buttons on calendar blocks */
         .box-actions {
-            position: absolute; top: 2px; left: 2px; display: flex; gap: 2px; background: rgba(255,255,255,0.85); border-radius: 6px; padding: 1px;
-            z-index: 3; /* above .class-content (z-index: 2) — otherwise the text layer can sit on top of the buttons and swallow taps */
+            position: absolute;
+            top: 3px;
+            left: 3px;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            padding: 2px 4px;
+            /* Solid high-contrast background prevents Android GPU compositor dropouts */
+            background: #ffffff;
+            border: 1px solid rgba(0, 0, 0, 0.15);
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+            z-index: 10;
+            touch-action: manipulation;
         }
+
+        html[data-theme="dark"] .box-actions {
+            background: #2a2a2a;
+            border-color: #444444;
+        }
+
+        /* Individual button */
         .box-btn {
-            background: none; border: none; cursor: pointer; padding: 3px; color: #333; transition: transform 0.1s, opacity 0.2s;
-            display: flex; align-items: center; justify-content: center; border-radius: 4px;
+            position: relative;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            /* Standard touch target without invisible overflow */
+            width: 26px;
+            height: 26px;
+            padding: 0;
+            margin: 0;
+            color: #2c3e50;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            transition: background-color 0.15s ease;
+        }
+
+        html[data-theme="dark"] .box-btn {
+            color: #e0e0e0;
+        }
+
+        .box-btn:active:not(:disabled) {
+            background: rgba(0, 0, 0, 0.1);
+        }
+
+        .box-btn svg {
+            display: block;
+            width: 14px;
+            height: 14px;
+            pointer-events: none;
+        }
+
+        /* Blocked / Locked button state: clearly visible, non-reactive */
+        .box-btn.locked {
+            cursor: not-allowed;
+            opacity: 0.65;
+            pointer-events: auto !important; /* Must be auto so it catches and absorbs taps */
+            transform: none !important;
+        }
+
+        .box-btn.locked:hover,
+        .box-btn.locked:active {
+            background: transparent !important;
+            transform: none !important;
+        }
+
+        /* In mobile stacked view, keep the button tile intact instead of hollowing it out */
+        @media (max-width: 900px) {
+            body:not(.force-table-view) .box-btn.locked {
+                background: var(--card) !important;
+                opacity: 0.5;
+                border: 1px solid var(--border);
+            }
         }
         .box-btn:hover { transform: scale(1.15); background: rgba(0,0,0,0.08); }
         .box-btn.locked { cursor: not-allowed; opacity: 0.4; transform: none; }
@@ -905,4 +979,32 @@
         /* Phones and short (landscape) screens: a slimmer sticky bar. */
         @media (max-width: 700px), (max-height: 500px) {
             .top-bar { padding-top: 4px; padding-bottom: 4px; margin-bottom: 8px; }
+        }
+
+
+        /* =========================================
+        Schedule-Only Mode (Zen Mode)
+        ========================================= */
+        body.schedule-only-mode .top-bar,
+        body.schedule-only-mode .header-panel,
+        body.schedule-only-mode .sidebar,
+        body.schedule-only-mode .controls,
+        body.schedule-only-mode .saved-schedules,
+        body.schedule-only-mode .site-footer-credit,
+        body.schedule-only-mode .course-list {
+            display: none !important;
+        }
+
+        /* Hide the action buttons (edit, search, delete) on the class blocks */
+        body.schedule-only-mode .box-actions {
+            display: none !important;
+        }
+
+        /* Remove extra margins/padding to maximize screen space */
+        body.schedule-only-mode {
+            padding: 10px !important;
+        }
+        body.schedule-only-mode .container {
+            max-width: 100% !important;
+            margin: 0 !important;
         }
