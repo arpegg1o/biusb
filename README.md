@@ -135,6 +135,75 @@ python3 -m http.server 8123
   button, so overlaps can be turned on without opening Settings. It and the
   settings switch both go through `setDevMode()` and stay in sync.
 
+- **Saved schedules** (panel above the "נבנה על ידי…" credit line): "+ שמור
+  מערכת נוכחית" stores a named snapshot of **one semester**: that semester's
+  courses (with each course's elective flag and colour; annual "שנתי" courses
+  count for every semester they run in), which of its electives are switched
+  on in the sidebar (`activeElectives`), and which alternative you were
+  viewing (`semesterIndices[sem]`). **Each semester has its own, completely
+  separate list**: the panel shows only the saves of the semester selected in
+  the picker, and loading one replaces only that semester's courses — the
+  other semesters are left alone. Names start as "טיוטה 1", "טיוטה 2", … and
+  the new card drops straight into rename mode (Enter/blur saves the name, Esc
+  keeps the default). Click a card to load it; the save icon overwrites it
+  with what's on screen, the pencil renames, the bin deletes (icons are inline
+  SVGs using `currentColor`, so they're black on the light theme and white on
+  the dark one). Stored in `localStorage` (`mySavedSchedules`). See "Saved
+  schedules" in `app.js`.
+  - A card gets a frame only while what's on screen is **exactly** that save:
+    same courses, same electives, same alternative number. Change any of
+    those (including flipping to another alternative with הקודם/הבא) and no
+    card is framed; get back to the identical state (e.g. by undoing) or press
+    the card's save icon and the frame returns. There is deliberately no text
+    label ("פעילה"/"שונתה") and no "modified" marker anywhere. Internally the
+    page still remembers which save you last loaded or saved into
+    (`myActiveSavedScheduleIds`), but only to skip the confirmation when you
+    save back into it and to name it in the "unsaved changes" prompt.
+  - Loading another save asks first only if the *courses or electives* match
+    none of the saves (just browsing alternatives doesn't trigger the prompt).
+    Loading also pushes the previous course list onto the undo history.
+    Note the existing undo is off by one — the first press re-applies the
+    current state and the second actually steps back — that's how it worked
+    before, and it's unchanged.
+  - "נקה הכל" and JSON import replace the working state wholesale, so they
+    detach every semester from its loaded save (no stale "modified" marker).
+  - Saves made with the first version of this feature (one snapshot covering
+    every semester) are split automatically into one save per semester that
+    has courses, under the same name.
+- **Phones / touch** (checked on emulated Pixel 7, 360px-wide and 320px-wide
+  Android screens): below 900px the calendar becomes a stacked list of day
+  cards. There, each block's action buttons (alternatives / edit / add parts /
+  remove elective) sit in their own row above the title — they used to be
+  drawn *under* the text layer (`.class-content` is `z-index: 2`), so taps hit
+  the title instead of the button — and are 38×38px. `.box-actions` also has
+  `z-index: 3` as a safeguard. The export menu opens on **tap** for
+  touch devices (`toggleExportMenu()`); with a mouse it still opens on hover.
+  Other phone-only layout fixes live in the `@media (max-width: 700px)` block
+  at the end of `styles.css`: the prev/status/next + semester controls are a
+  grid, the course-list headers and rows wrap instead of clipping, the sticky
+  top bar is slimmer, and `text-size-adjust: 100%` stops Android Chrome from
+  inflating some text.
+- **Keyboard shortcuts** (`handleGlobalShortcuts()` in `app.js`): `←` / `→`
+  switch semester (the UI is RTL, so `←` = next, `→` = previous; it stops at
+  the first/last semester). `Ctrl`/`⌘`+`C` copies the schedule image to the
+  clipboard (see below) — but only when no text is selected, so normal copying
+  is never hijacked, and it matches `e.code === 'KeyC'` so it also works on a
+  Hebrew keyboard layout. Both are ignored while typing in a field, while a
+  dialog is open, and (arrows) while the semester `<select>` itself has focus.
+- **Sticky top bar**: the theme / settings / "אפשר חפיפות" controls live in
+  `#topBar`, a `position: sticky` bar that stays at the top of the screen
+  while you scroll, with a soft shadow once content slides under it.
+- **Copy to clipboard** (ייצא ▼ → "העתק ללוח", or `Ctrl+C`): the same picture as
+  the PNG export, but put on the clipboard instead of downloaded. PNG only
+  (that's all the clipboard reliably accepts). Needs a secure context —
+  https (GitHub Pages) or `localhost` — and a browser with `ClipboardItem`
+  (Chrome/Edge/Safari, Firefox 127+); otherwise it explains that and points
+  at the PNG export. The `ClipboardItem` is created inside the click with a
+  *promise* of the image, because Safari refuses `clipboard.write()` once the
+  click's user-gesture window has passed while the image renders. The
+  capture code (`captureCalendarCanvas()`) is now shared with the PNG/JPG
+  export; a small `showToast()` shows "copied ✓".
+
 ## Refreshing the data
 
 `data/` is a copy of the main app's `apps/web/public/data/`. To update it,

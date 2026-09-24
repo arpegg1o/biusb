@@ -1,5 +1,14 @@
         /* Base Light Theme */
         :root {
+            /* Tells the browser which palette to use for UI it renders itself
+             * (native <select> dropdown popups, date/time picker widgets,
+             * checkboxes, scrollbars). Without this, the browser assumes
+             * "light" always — so once .class-event/inputs/etc. are painted
+             * dark via our own CSS, a <select>'s native popup can still open
+             * with a light system background while inheriting our light text
+             * color from the closed control, making every option unreadable
+             * (light-on-light). This one line is the actual fix for that. */
+            color-scheme: light;
             --primary: #4a90e2;
             --bg: #f5f7fa;
             --card: #ffffff;
@@ -19,6 +28,7 @@
 
         /* Dark Theme Toggle */
         html[data-theme="dark"] {
+            color-scheme: dark;
             --bg: #121212;
             --card: #1e1e1e;
             --border: #333333;
@@ -27,8 +37,15 @@
             --bg-alt: #2c2c2c;
         }
         
-        html[data-theme="dark"] .class-event { color: #000; }
-        html[data-theme="dark"] .class-type, html[data-theme="dark"] .elective-badge { color: #fff; }
+        /* NOTE: .class-event's own text color is set inline per-element in
+         * app.js (getCourseStyle()/contrastTextColor()), computed from that
+         * event's actual (opaque) fill so it stays legible whatever color a
+         * course or custom color happens to be. The base color: var(--text-main)
+         * on .class-event further down is only a fallback for the few event
+         * states that intentionally paint a low-alpha tint over the page
+         * itself (drag hints, conflict indicators) rather than a solid chip —
+         * those should read like normal page text, not force black, which is
+         * why there is deliberately no dark-theme override for it here. */
 
         /* "מערכת" (system) theme option — no data-theme attribute at all means
          * "follow the OS", so these mirror the dark overrides above under a
@@ -39,6 +56,7 @@
          * wrong theme if the OS is dark but the user explicitly chose light). */
         @media (prefers-color-scheme: dark) {
             html:not([data-theme="light"]):not([data-theme="dark"]) {
+                color-scheme: dark;
                 --bg: #121212;
                 --card: #1e1e1e;
                 --border: #333333;
@@ -46,9 +64,6 @@
                 --text-muted: #aaaaaa;
                 --bg-alt: #2c2c2c;
             }
-            html:not([data-theme="light"]):not([data-theme="dark"]) .class-event { color: #000; }
-            html:not([data-theme="light"]):not([data-theme="dark"]) .class-type,
-            html:not([data-theme="light"]):not([data-theme="dark"]) .elective-badge { color: #fff; }
         }
 
         body {
@@ -62,14 +77,34 @@
             overflow-x: hidden; /* Prevents unwanted scrolling if sidebar goes too far right */
         }
 
+        /* Android Chrome otherwise "boosts" the font size of some blocks of
+         * text, which makes parts of the page look bigger/misaligned. */
+        html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+        button, select, label, .class-event { touch-action: manipulation; }
+
+        /* Top bar: theme / settings / overlaps. Sticky, so it follows the page
+         * as you scroll. The negative margin makes it span the full width
+         * over the body's 20px padding. It's LTR so the three controls keep
+         * the left-to-right order they always had in the corner. */
+        .top-bar {
+            position: sticky;
+            top: 0;
+            z-index: 30;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            direction: ltr;
+            margin: -20px -20px 12px;
+            padding: 10px 20px;
+            background: var(--bg);
+            transition: box-shadow 0.2s, background 0.3s;
+        }
+        .top-bar.scrolled { box-shadow: 0 2px 10px rgba(0,0,0,0.15); }
+        /* Anchors / scrollIntoView shouldn't end up hidden under the bar. */
+        html { scroll-padding-top: 64px; }
+
         /* Theme Toggle Button */
         #themeToggleBtn {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            z-index: 20; /* .container is also `position: relative` and comes
-                after these buttons in the DOM — without an explicit z-index
-                here, it paints on top and silently swallows clicks on them. */
             background: none;
             border: none;
             color: var(--text-main);
@@ -86,10 +121,6 @@
         }
 
         #settingsToggleBtn {
-            position: absolute;
-            top: 20px;
-            left: 60px;
-            z-index: 20; /* see #themeToggleBtn's comment above */
             background: none;
             border: none;
             color: var(--text-main);
@@ -105,14 +136,33 @@
             background: rgba(128, 128, 128, 0.2);
         }
 
-        /* Quick "allow overlaps" switch — same top-corner row as the theme
-         * and settings buttons (left: 20px / 60px), so it reads as part of
-         * that group rather than being hidden inside the settings dialog. */
+        /* Mobile table/list view toggle — only meaningful under the 900px
+           breakpoint where the stacked-card layout kicks in; see
+           toggleCalendarViewMode() in app.js and the
+           `body:not(.force-table-view)` guards added throughout the
+           @media (max-width: 900px) block below. */
+        .mobile-only-btn {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text-main);
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background 0.2s;
+            align-items: center;
+            justify-content: center;
+        }
+        .mobile-only-btn:hover { background: rgba(128, 128, 128, 0.2); }
+        @media (max-width: 900px) {
+            .mobile-only-btn { display: flex; }
+        }
+
+        /* Quick "allow overlaps" switch — sits in the top bar next to the
+         * theme and settings buttons, so it reads as part of that group
+         * rather than being hidden inside the settings dialog. */
         #overlapsQuickToggle {
-            position: absolute;
-            top: 20px;
-            left: 100px;
-            z-index: 20; /* see #themeToggleBtn's comment above */
+            direction: rtl; /* the bar itself is LTR, see .top-bar */
             display: flex;
             align-items: center;
             gap: 8px;
@@ -127,8 +177,6 @@
         #overlapsQuickToggle:hover { background: var(--bg-alt); }
         #overlapsQuickToggle:has(input:checked) { border-color: var(--danger); }
         .quick-toggle-text { font-size: 13px; font-weight: bold; color: var(--text-main); white-space: nowrap; }
-
-        .page-title { text-align: center; margin-top: 0; }
 
         .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
         .settings-row:last-child { border-bottom: none; }
@@ -192,6 +240,103 @@
         .semester-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .semester-section-header h3 { margin: 0; font-size: 15px; }
         #searchAddDialog { max-width: 480px; max-height: 82vh; overflow-y: auto; }
+
+        .site-footer-credit { text-align: center; color: var(--text-muted); font-size: 12px; margin: 10px 0 0; }
+
+        /* Saved schedules — the panel right above the credit line, under the
+         * calendar (see "Saved schedules" in app.js). */
+        .saved-schedules {
+            margin-top: 24px;
+            padding: 14px 16px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+            transition: background 0.3s;
+        }
+        .saved-schedules-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .saved-schedules-header h3 { flex: 1; margin: 0; font-size: 15px; }
+        .saved-schedules-save-btn { padding: 6px 14px; font-size: 13px; }
+        .saved-schedules-list { display: flex; flex-wrap: wrap; gap: 10px; }
+        .saved-schedules-empty { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+
+        .saved-schedule-card {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 200px;
+            max-width: 100%;
+            box-sizing: border-box;
+            padding: 4px 4px 4px 8px;
+            background: var(--bg-alt);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .saved-schedule-card.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
+
+        /* The whole name/meta block is one button = "load this schedule". The
+         * global `button` rule is chunky (padding, bold 15px), so reset it. */
+        .saved-schedule-main {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 6px 8px;
+            background: none;
+            border: none;
+            border-radius: 6px;
+            color: var(--text-main);
+            font-size: 14px;
+            font-weight: normal;
+            text-align: right;
+        }
+        .saved-schedule-main:hover { background: var(--border); }
+        .saved-schedule-name { font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .saved-schedule-meta { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+        .saved-schedule-rename-input {
+            flex: 1;
+            min-width: 0;
+            padding: 8px;
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            background: var(--card);
+            color: var(--text-main);
+            font: inherit;
+            font-size: 14px;
+        }
+
+
+        .saved-schedule-actions { display: flex; align-items: center; }
+        /* Plain one-colour icons (inline SVG, stroke = currentColor) so they
+         * are black on the light theme and white on the dark one. */
+        .saved-schedule-actions .icon-btn { padding: 5px; line-height: 0; display: flex; align-items: center; color: var(--text-main); opacity: 0.65; }
+        .saved-schedule-actions .icon-btn:hover { opacity: 1; }
+
+        /* Small transient message (e.g. "copied to clipboard"). */
+        #appToast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translate(-50%, 20px);
+            z-index: 1000;
+            width: max-content;
+            max-width: 90vw;
+            text-align: center;
+            padding: 10px 18px;
+            background: var(--text-main);
+            color: var(--bg);
+            border-radius: 999px;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s, transform 0.2s;
+        }
+        #appToast.visible { opacity: 1; transform: translate(-50%, 0); }
 
         /* Department-filter chips in Settings (see renderDeptFilterChips()) */
         .dept-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -293,7 +438,10 @@
         }
         .dropdown-content button:last-child { border-bottom: none; }
         .dropdown-content button:hover { background-color: var(--bg-alt); font-weight: bold;}
-        .dropdown:hover .dropdown-content { display: block; }
+        /* Hover opens the menu for mouse users; touch screens have no hover,
+         * so there it's opened by tapping the button (toggleExportMenu()). */
+        @media (hover: hover) { .dropdown:hover .dropdown-content { display: block; } }
+        .dropdown.open .dropdown-content { display: block; }
 
         .controls {
             display: flex;
@@ -425,7 +573,7 @@
             position: absolute; width: 100%; right: 0; border: 2px solid; border-radius: 6px; 
             padding: 26px 4px 4px 4px; 
             font-size: 12px; overflow: hidden; box-sizing: border-box; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; z-index: 2;
-            color: #000;
+            color: var(--text-main);
         }
 
         .class-event.text-area { cursor: text; }
@@ -473,6 +621,7 @@
         
         .box-actions {
             position: absolute; top: 2px; left: 2px; display: flex; gap: 2px; background: rgba(255,255,255,0.85); border-radius: 6px; padding: 1px;
+            z-index: 3; /* above .class-content (z-index: 2) — otherwise the text layer can sit on top of the buttons and swallow taps */
         }
         .box-btn {
             background: none; border: none; cursor: pointer; padding: 3px; color: #333; transition: transform 0.1s, opacity 0.2s;
@@ -489,6 +638,10 @@
         .course-group-title { background: var(--bg-alt); padding: 10px 15px; font-weight: bold; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
         .course-option-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 15px; border-bottom: 1px solid var(--border); }
         .course-option-row:last-child { border-bottom: none; }
+        /* keep each time range on one line and the ✏️/➕/🗑️ buttons in one row, however narrow the screen */
+        .course-option-row { gap: 8px; }
+        .course-option-row > div:last-child { display: flex; flex-shrink: 0; }
+        .course-option-row [dir="ltr"] { white-space: nowrap; }
         
         .make-elective-btn { background: var(--bg); color: var(--text-main); border: 1px solid var(--border); padding: 6px 12px; font-size: 12px; border-radius: 4px; transition: 0.2s; margin:0;}
         .make-elective-btn:hover { background: var(--border); }
@@ -502,17 +655,34 @@
         dialog { border: none; border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 25px; width: 90%; max-width: 400px; background: var(--card); color: var(--text-main); }
         dialog::backdrop { background: rgba(0,0,0,0.5); }
         .form-group { margin-bottom: 15px; }
+        /* An extra meeting row added via "+ הוסף מפגש נוסף" (see
+           addExtraSessionRow() in app.js) — same fields as the main
+           day/start/end row, boxed so it reads as "one more meeting" and
+           removable via the ✕ in its header. */
+        .session-row.extra {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 10px 0;
+            margin-bottom: 15px;
+            background: var(--bg-alt);
+        }
+        .session-row-header {
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px; color: var(--text-muted); margin-bottom: 8px;
+        }
+        .session-row-remove {
+            background: none; border: none; cursor: pointer; color: var(--text-muted);
+            font-size: 14px; padding: 2px 6px; border-radius: 4px;
+        }
+        .session-row-remove:hover { color: var(--danger); background: rgba(0,0,0,0.08); }
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
         .form-group input, .form-group select { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 5px; box-sizing: border-box; font-family: inherit; }
         .dialog-buttons { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
-        /* Narrow screens: the corner controls (theme / settings / overlaps)
-         * are absolutely positioned over the top of the page, so drop the
-         * centered title below them instead of letting them overlap. */
+        /* Narrow screens: the overlaps switch collapses to just its slider. */
         @media (max-width: 700px) {
             .quick-toggle-text { display: none; }
             #overlapsQuickToggle { padding: 5px 8px; }
-            .page-title { margin-top: 46px; }
         }
 
         /* Mobile Responsiveness */
@@ -523,23 +693,29 @@
         @media (max-width: 900px) {
             .schedule-column { min-width: 100%; width: 100%; }
             .sidebar { width: 100%; }
-            .calendar-wrapper { overflow: visible; background: none; border: none; box-shadow: none; }
-            .calendar-headers { display: none; }
-            .calendar-body { flex-direction: column !important; height: auto !important; }
-            .time-col { display: none; }
-            
-            .day-col { 
-                border-left: none !important; 
+
+            /* Default mobile layout: one day per stacked card. Every rule in
+               this sub-block is scoped off by .force-table-view (added to
+               <body> by toggleCalendarViewMode()) so picking "table view"
+               falls straight through to the normal desktop grid CSS above,
+               instead of fighting it with more overrides. */
+            body:not(.force-table-view) .calendar-wrapper { overflow: visible; background: none; border: none; box-shadow: none; }
+            body:not(.force-table-view) .calendar-headers { display: none; }
+            body:not(.force-table-view) .calendar-body { flex-direction: column !important; height: auto !important; }
+            body:not(.force-table-view) .time-col { display: none; }
+
+            body:not(.force-table-view) .day-col {
+                border-left: none !important;
                 background: var(--card) !important;
-                padding: 15px; 
-                margin-bottom: 20px; 
+                padding: 15px;
+                margin-bottom: 20px;
                 border: 1px solid var(--border);
                 border-radius: 10px;
                 min-height: auto;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             }
-            .day-col:empty { display: none; }
-            .day-col::before {
+            body:not(.force-table-view) .day-col:empty { display: none; }
+            body:not(.force-table-view) .day-col::before {
                 content: attr(data-day);
                 display: block;
                 font-weight: bold;
@@ -549,8 +725,8 @@
                 padding-bottom: 8px;
                 color: var(--primary);
             }
-            
-            .class-event {
+
+            body:not(.force-table-view) .class-event {
                 position: relative !important;
                 top: 0 !important;
                 width: 100% !important;
@@ -563,12 +739,14 @@
                 transform: none !important;
                 box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
             }
-            .class-event.ghost {
+            /* Scope alternative-swapping styling to non-preview ghosts only */
+            body:not(.force-table-view) .class-event.ghost:not(.preview-ghost) {
                 border-style: solid !important;
                 border-color: var(--icon-conditional) !important;
-                background: rgba(230, 126, 34, 0.1) !important;
+                background: rgba(230, 126, 34, 0.15) !important;
+                color: var(--text-main) !important;
             }
-            .class-event.ghost .class-title::after {
+            body:not(.force-table-view) .class-event.ghost:not(.preview-ghost) .class-title::after {
                 content: " (לחץ להחלפה)";
                 color: var(--icon-conditional);
                 font-weight: normal;
@@ -576,5 +754,155 @@
                 display: block;
                 margin-top: 2px;
             }
-            .box-actions { top: 10px; left: 10px; }
+
+            /* Candidate preview blocks when selecting/adding a course on mobile */
+            body:not(.force-table-view) .class-event.preview-ghost {
+                border-style: dashed !important;
+                border-width: 2px !important;
+                opacity: 1 !important;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+            }
+            body:not(.force-table-view) .class-event.preview-ghost.preview-ghost-added {
+                border-style: solid !important;
+                box-shadow: 0 0 0 2px var(--primary), 0 2px 8px rgba(0,0,0,0.25) !important;
+            }
+
+            /* Dim existing events in list view during preview so options are prominent */
+            body:not(.force-table-view) .calendar-wrapper.preview-mode .class-event:not(.preview-ghost) {
+                opacity: 0.25 !important;
+                pointer-events: none;
+            }
+            body:not(.force-table-view) .class-event.ghost .class-title::after {
+                content: " (לחץ להחלפה)";
+                color: var(--icon-conditional);
+                font-weight: normal;
+                font-size: 11px;
+                display: block;
+                margin-top: 2px;
+            }
+            /* In this stacked layout the block is a full-width card, so the
+             * action buttons get their own row above the title instead of
+             * floating over it (they used to be covered by the text layer,
+             * which made them untappable) and are big enough for a finger. */
+            body:not(.force-table-view) .class-event { padding: 12px 15px 15px !important; }
+            body:not(.force-table-view) .box-actions {
+                position: static;
+                width: fit-content;
+                margin: 0 auto 8px 0; /* RTL: auto on the right pushes the row to the left, as before */
+                gap: 6px;
+                padding: 3px;
+                border-radius: 8px;
+            }
+            body:not(.force-table-view) .box-btn { min-width: 38px; min-height: 38px; padding: 6px; }
+            body:not(.force-table-view) .box-btn:hover { transform: none; }
+
+            /* "Table view" (body.force-table-view): the real grid, same as
+               desktop — but a phone's viewport is far narrower than a
+               readable set of 6 day columns, so it's given a floor width
+               and left to scroll/pinch-zoom horizontally rather than
+               squeezing text unreadably small. The page's own viewport meta
+               tag already allows pinch-zoom; this only adds a scrollbar as
+               a second way to get around. */
+            /* Table Mode Zoom Bar */
+            .calendar-zoom-controls {
+                display: none;
+                position: sticky;
+                top: 6px;
+                left: 8px;
+                z-index: 25;
+                width: fit-content;
+                margin: 4px 8px -36px auto;
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 999px;
+                padding: 3px 6px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+                gap: 4px;
+                align-items: center;
+                direction: rtl;
+            }
+            body.force-table-view .calendar-zoom-controls {
+                display: flex;
+            }
+
+
+            /* Table Mode Zoom Bar (Unobtrusive & Document Flow) */
+            .calendar-zoom-controls {
+                display: flex;
+                justify-content: flex-end; /* Aligns to the left side in RTL */
+                align-items: center;
+                gap: 4px;
+                margin-bottom: 8px;
+                padding: 0 4px;
+            }
+
+            /* Forces perfect vertical centering for both text and SVG buttons */
+            .calendar-zoom-controls .icon-btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 32px;
+                min-width: 32px;
+                padding: 0 6px;
+                line-height: 1;
+            }
+
+            /* Hide zoom controls on mobile when stack view (default) is active */
+            @media (max-width: 900px) {
+                body:not(.force-table-view) .calendar-zoom-controls {
+                    display: none;
+                }
+            }
+
+            /* Mobile Table View Container */
+            body.force-table-view .calendar-wrapper {
+                overflow: auto;
+                -webkit-overflow-scrolling: touch;
+                touch-action: pan-x pan-y pinch-zoom;
+            }
+            body.force-table-view .calendar-table-content {
+                min-width: 720px;
+                width: fit-content;
+                transform-origin: top right;
+                transition: zoom 0.15s ease-out;
+            }
+            body.force-table-view .calendar-headers,
+            body.force-table-view .calendar-body {
+                min-width: 720px;
+            }
+            @media (max-width: 900px) {
+                body { overflow-x: auto; }
+            }
+        }
+
+        @media (max-width: 700px) {
+            .saved-schedule-card { flex: 1 1 100%; }
+
+            /* saved-schedules header: title on its own line, button under it */
+            .saved-schedules { margin-top: 4px; }
+            .saved-schedules-header h3 { flex: 1 1 100%; }
+            .saved-schedules-save-btn { width: 100%; padding: 9px 14px; }
+
+            /* prev / status / next on one row, then refresh + semester picker,
+             * instead of whatever the flex-wrap happened to produce */
+            .controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+            .controls .status { min-width: 0; font-size: 16px; }
+            .controls select { grid-column: 2 / 4; width: 100%; margin: 0 !important; }
+            .controls .legend { grid-column: 1 / -1; flex-wrap: wrap; gap: 8px 16px; }
+
+            /* the course-list group header: name + חובה/בחירה toggle + count
+             * can't all fit in one line — let them wrap instead of clipping */
+            .course-group-title { flex-wrap: wrap; gap: 6px 12px; }
+            .course-group-title > div { flex-wrap: wrap; min-width: 0; }
+            .course-group-title > div > div { flex-shrink: 0; }
+            .course-option-row .icon-btn { padding: 8px; }
+            /* not enough room for badge + time range + 3 buttons side by side:
+             * the buttons take their own line, at the same (left) end as on desktop */
+            .course-option-row { flex-wrap: wrap; }
+            .course-option-row > div:last-child { flex-basis: 100%; justify-content: flex-end; }
+        }
+
+        /* Phones and short (landscape) screens: a slimmer sticky bar. */
+        @media (max-width: 700px), (max-height: 500px) {
+            .top-bar { padding-top: 4px; padding-bottom: 4px; margin-bottom: 8px; }
         }

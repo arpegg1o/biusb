@@ -2,34 +2,46 @@
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>מחולל מערכת שעות חכם</title>
-    <link rel="stylesheet" href="styles.css?v=20260923">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0">
+    <title>מערכת שעות</title>
+    <link rel="stylesheet" href="styles.css?v=20260925-1">
 </head>
 <body>
 
-<!-- Theme Toggle Button -->
-<button id="themeToggleBtn" onclick="toggleTheme()" title="החלף עיצוב">
-    <!-- Icon injected by JS -->
-</button>
+<!-- Top bar: theme / settings / overlaps. Sticky, so it stays at the top of
+     the screen while the page scrolls underneath it. -->
+<div class="top-bar" id="topBar">
+    <!-- Theme Toggle Button -->
+    <button id="themeToggleBtn" onclick="toggleTheme()" title="החלף עיצוב">
+        <!-- Icon injected by JS -->
+    </button>
 
-<!-- Settings Button -->
-<button id="settingsToggleBtn" onclick="openSettingsDialog()" title="הגדרות">
-    <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-</button>
+    <!-- Settings Button -->
+    <button id="settingsToggleBtn" onclick="openSettingsDialog()" title="הגדרות">
+        <svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
 
-<!-- Quick "allow overlaps" switch, sitting right next to ⚙️ instead of only
-     inside the settings dialog. The whole thing is one <label> wrapping the
-     (invisible) checkbox, so clicking the slider OR the text toggles it —
-     see the note on the same switch in #settingsDialog below. Both switches
-     go through setDevMode(), which keeps them in sync. -->
-<label id="overlapsQuickToggle" title="אפשר חפיפות בין שיעורים (מצב מפתח)">
-    <span class="switch">
-        <input type="checkbox" id="quickOverlapsToggle" class="danger-switch" onchange="setDevMode(this.checked)">
-        <span class="slider"></span>
-    </span>
-    <span class="quick-toggle-text">אפשר חפיפות</span>
-</label>
+    <!-- Mobile-only: switch the stacked one-day-per-card layout for the same
+         grid/table the desktop uses (scroll or pinch-zoom to read it) — see
+         toggleCalendarViewMode() in app.js. Hidden above the 900px breakpoint,
+         where the grid is already the only layout. -->
+    <button id="viewModeToggleBtn" class="mobile-only-btn" onclick="toggleCalendarViewMode()" title="החלף לתצוגת טבלה">
+        <!-- Icon injected by JS -->
+    </button>
+
+    <!-- Quick "allow overlaps" switch, sitting right next to ⚙️ instead of only
+         inside the settings dialog. The whole thing is one <label> wrapping the
+         (invisible) checkbox, so clicking the slider OR the text toggles it —
+         see the note on the same switch in #settingsDialog below. Both switches
+         go through setDevMode(), which keeps them in sync. -->
+    <label id="overlapsQuickToggle" title="אפשר חפיפות בין שיעורים (מצב מפתח)">
+        <span class="switch">
+            <input type="checkbox" id="quickOverlapsToggle" class="danger-switch" onchange="setDevMode(this.checked)">
+            <span class="slider"></span>
+        </span>
+        <span class="quick-toggle-text">אפשר חפיפות</span>
+    </label>
+</div>
 
 <!-- Calendar-preview control bar: shown instead of a plain list while picking
      a course's group (see startPreview() in app.js) — a plain fixed bar
@@ -38,8 +50,6 @@
 <div id="previewControlBar" class="preview-control-bar" style="display:none;"></div>
 
 <div class="container">
-    <h2 class="page-title">מחולל מערכת שעות חכם</h2>
-    
     <div class="header-panel">
         <div class="search-box">
             <input type="text" id="courseSearchInput" autocomplete="off"
@@ -57,11 +67,12 @@
             </button>
             
             <div class="dropdown">
-                <button class="btn-simple">ייצא ▼</button>
+                <button class="btn-simple" onclick="toggleExportMenu(event)" aria-haspopup="true">ייצא ▼</button>
                 <div class="dropdown-content">
                     <button onclick="exportData()">נתונים (JSON)</button>
                     <button onclick="exportToImage('png')">תמונה (PNG)</button>
                     <button onclick="exportToImage('jpeg')">תמונה (JPG)</button>
+                    <button onclick="exportToClipboard()" title="קיצור: Ctrl+C">העתק ללוח</button>
                     <button onclick="exportToPDF()">מסמך (PDF)</button>
                 </div>
             </div>
@@ -95,7 +106,7 @@
                     <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 </button>
                 
-                <select id="semesterSelect" onchange="onSemesterChange()" style="margin-right: auto;">
+                <select id="semesterSelect" onchange="onSemesterChange()" style="margin-right: auto;" title="אפשר גם עם החיצים ← →">
                     <option value="א'">סמסטר א'</option>
                     <option value="ב'">סמסטר ב'</option>
                     <option value="קיץ">קיץ</option>
@@ -108,7 +119,34 @@
                 </div>
             </div>
 
+            <!-- Clean, floating-free zoom controls above the calendar -->
+            <div class="calendar-zoom-controls" id="calendarZoomControls">
+                <!-- Fullscreen -->
+                <button type="button" class="icon-btn" onclick="toggleFullScreen()" title="מסך מלא">
+                    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none"><path d="M4 8V4m0 0h4M4 4l5 5M20 8V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5M20 16v4m0 0h-4m4 0l-5-5"></path></svg>
+                </button>
+                
+                <!-- Fit to Screen (Width/Expand icon) -->
+                <button type="button" class="icon-btn" onclick="fitTableToScreen()" title="התאם למסך">
+                    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 5 3 10 8 15"></polyline><polyline points="16 5 21 10 16 15"></polyline><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                </button>
+                
+                <!-- 100% Text -->
+                <button type="button" class="icon-btn" style="font-size: 13px; font-weight: bold; font-family: inherit;" onclick="setTableZoom(1.0)" title="תצוגה מקורית (100%)">100%</button>
+                
+                <!-- Zoom Out (-) -->
+                <button type="button" class="icon-btn" onclick="zoomCalendarStep(-0.15)" title="הקטן תצוגה">
+                    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </button>
+                
+                <!-- Zoom In (+) -->
+                <button type="button" class="icon-btn" onclick="zoomCalendarStep(0.15)" title="הגדל תצוגה">
+                    <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </button>
+            </div>
+
             <div class="calendar-wrapper hide-friday">
+                <div class="calendar-table-content" id="calendarTableContent">
                 <div class="calendar-headers">
                     <div class="header-cell time-hdr">שעה</div>
                     <div class="header-cell">ראשון (א')</div>
@@ -116,12 +154,6 @@
                     <div class="header-cell">שלישי (ג')</div>
                     <div class="header-cell">רביעי (ד')</div>
                     <div class="header-cell">חמישי (ה')</div>
-                    <!-- Hidden by default (see .calendar-wrapper.hide-friday in
-                         styles.css) — shown automatically once a course is
-                         added on Friday, or if "הצג תמיד את יום שישי" is on
-                         in Settings. Kept as the LAST header cell so the
-                         existing :last-child border rule keeps applying to
-                         whichever day is actually visually last. -->
                     <div class="header-cell">שישי (ו')</div>
                 </div>
                 <div class="calendar-body" id="calendarBody">
@@ -134,6 +166,22 @@
                     <div class="day-col" id="day-ו" data-day="שישי (ו')"></div>
                 </div>
             </div>
+        </div>
+
+            <!-- Named, saved schedules (see "Saved schedules" in app.js). A saved
+                 schedule is a snapshot of the courses, the chosen electives and
+                 which schedule number you were looking at. Cards are rendered by
+                 renderSavedSchedules(). -->
+            <section class="saved-schedules" id="savedSchedulesPanel" aria-label="מערכות שמורות">
+                <div class="saved-schedules-header">
+                    <h3 id="savedSchedulesTitle">מערכות שמורות</h3>
+                    <button class="btn-simple saved-schedules-save-btn" onclick="saveCurrentAsNewSchedule()"
+                            title="שמור את המערכת הנוכחית (כולל קורסי הבחירה שנבחרו) כמערכת חדשה">+ שמור מערכת נוכחית</button>
+                </div>
+                <div class="saved-schedules-list" id="savedSchedulesList"></div>
+            </section>
+
+            <p class="site-footer-credit">נבנה על ידי ואביחי ג' ואורי</p>
 
         </div>
     </div>
@@ -180,8 +228,8 @@
         <input type="text" id="editName">
     </div>
     <div class="form-group">
-        <label>סוג (הרצאה/תרגיל)</label>
-        <select id="editType">
+        <label>סוג</label>
+        <select id="editType" onchange="onEditTypeChange()">
             <option value="הרצאה">הרצאה</option>
             <option value="תרגיל">תרגיל</option>
             <option value="מעבדה">מעבדה</option>
@@ -189,7 +237,9 @@
             <option value="סדנא">סדנא</option>
             <option value="תגבור">תגבור</option>
             <option value="שיעור">שיעור (אחר)</option>
+            <option value="__custom__">מותאם אישית...</option>
         </select>
+        <input type="text" id="editTypeCustom" placeholder="הקלד סוג מותאם אישית" style="display:none; margin-top:8px;">
     </div>
     <div class="form-group">
         <label>סמסטר</label>
@@ -200,27 +250,42 @@
             <option value="קיץ">קיץ</option>
         </select>
     </div>
+
+    <!-- The always-present main day/start/end row, plus any extra
+         independent course rows added via "+ הוסף שורה נוספת" below (each
+         with its own type/semester/day/time/elective — see
+         addExtraSessionRow()/collectExtraSessions() in app.js). Extra rows
+         share only the course name typed above; they're saved as separate
+         entries, not as more meetings of one group. -->
+    <div id="editSessionsList">
+        <div class="session-row" data-session-row="main">
+            <div class="form-group">
+                <label>יום</label>
+                <select id="editDay">
+                    <option value="א">ראשון</option>
+                    <option value="ב">שני</option>
+                    <option value="ג">שלישי</option>
+                    <option value="ד">רביעי</option>
+                    <option value="ה">חמישי</option>
+                    <option value="ו">שישי</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>שעת התחלה</label>
+                    <input type="time" id="editStart">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>שעת סיום</label>
+                    <input type="time" id="editEnd">
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="form-group">
-        <label>יום</label>
-        <select id="editDay">
-            <option value="א">ראשון</option>
-            <option value="ב">שני</option>
-            <option value="ג">שלישי</option>
-            <option value="ד">רביעי</option>
-            <option value="ה">חמישי</option>
-            <option value="ו">שישי</option>
-        </select>
+        <button type="button" class="btn-simple" style="width:100%;" onclick="addExtraSessionRow()">+ הוסף שורה נוספת לאותו שם קורס (סוג/סמסטר/יום/שעה משלה)</button>
     </div>
-    <div style="display:flex; gap:10px;">
-        <div class="form-group" style="flex:1;">
-            <label>שעת התחלה</label>
-            <input type="time" id="editStart">
-        </div>
-        <div class="form-group" style="flex:1;">
-            <label>שעת סיום</label>
-            <input type="time" id="editEnd">
-        </div>
-    </div>
+
     <div class="form-group">
         <label>צבע קורס (אופציונלי)</label>
         <div style="display:flex; gap:10px; align-items:center;">
@@ -230,6 +295,22 @@
             </label>
         </div>
     </div>
+
+    <!-- Elective toggle for the manual-fill form. Lives outside
+         #pasteAddSection (whose own copy stays tied to processInput()/the
+         paste box) but is shown/hidden by the exact same rule: visible only
+         when adding a new class, hidden entirely by openManualEditDialog()
+         when editing an existing one. -->
+    <div class="form-group" id="editElectiveSection">
+        <label class="toggle-label">
+            <div class="switch">
+                <input type="checkbox" id="editElectiveToggle">
+                <span class="slider"></span>
+            </div>
+            סמן קורס זה כבחירה (אופציונלי)
+        </label>
+    </div>
+
     <div class="dialog-buttons">
         <button class="danger" onclick="deleteFromEdit()" id="editDeleteBtn">מחק שיעור</button>
         <button class="btn-simple" onclick="document.getElementById('editDialog').close()">ביטול</button>
@@ -341,7 +422,7 @@
 <script src="vendor/uFuzzy.iife.min.js"></script>
 <!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
      files aggressively can keep serving an old app.js after an update. -->
-<script src="app.js?v=20260923-1"></script>
+<script src="app.js?v=20260925-1"></script>
 
 </body>
 </html>

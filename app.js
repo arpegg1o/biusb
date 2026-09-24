@@ -8,6 +8,17 @@
     let lastConflictDetails = null; 
     let pendingAlternativeJump = null; 
     let devModeAllowOverlaps = false; 
+    // Set right before every scheduleWorker.postMessage() (see updateUI()),
+    // this is the exact schedule that was on screen for the semester being
+    // recomputed — or null when there's nothing meaningful to compare
+    // against (first solve of the session, or just switched to a semester
+    // that hasn't been solved yet this session). The worker's response uses
+    // it to keep the new schedule as close as possible to what was showing
+    // rather than always jumping to the "best" one — see
+    // chooseClosestScheduleIndex() and scheduleWorker.onmessage.
+    let scheduleSnapshotBeforeUpdate = null;
+    let hasComputedOnce = false;
+    let lastComputedSemester = null;
     
     const HOUR_HEIGHT = 50; 
     
@@ -18,6 +29,11 @@
 
     const sunSVG = `<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
     const moonSVG = `<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`;
+    // Mobile view-mode toggle icons (see toggleCalendarViewMode()): each
+    // icon shows the view a tap would switch TO, matching the theme
+    // button's own convention (sun shown while dark, moon shown while light).
+    const tableViewSVG = `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line><line x1="9" y1="3" x2="9" y2="21"></line><line x1="15" y1="3" x2="15" y2="21"></line></svg>`;
+    const stackViewSVG = `<svg viewBox="0 0 24 24" width="22" height="22" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="4" rx="1"></rect><rect x="4" y="10" width="16" height="4" rx="1"></rect><rect x="4" y="16" width="16" height="4" rx="1"></rect></svg>`;
 
     // =====================================================================
     // Course search — replaces the paste box as the primary way to add a
@@ -1091,9 +1107,27 @@
                     alert("גם לאחר הסרת קורס הבחירה, לא נמצא שיבוץ תקין.");
                     semesterIndices[currentSem] = 0;
                 }
+            } else if (scheduleSnapshotBeforeUpdate === null) {
+                // Cold start (page just loaded), or we just switched to a
+                // semester that hasn't been solved yet this session —
+                // nothing comparable is in memory. Trust (and just clamp)
+                // whatever index was already saved for this semester rather
+                // than resetting to the "best" schedule: re-running the
+                // (deterministic) solver on the same input reproduces the
+                // exact same list of schedules in the exact same order, so
+                // the saved index still points at the same schedule as before.
+                const savedIdx = semesterIndices[currentSem];
+                semesterIndices[currentSem] =
+                    (typeof savedIdx === 'number' && savedIdx >= 0 && savedIdx < validSchedules.length) ? savedIdx : 0;
             } else {
-                semesterIndices[currentSem] = 0;
+                // A course/group/elective actually changed within the same
+                // semester — keep whatever's on screen as intact as
+                // possible instead of jumping back to the "best" schedule.
+                semesterIndices[currentSem] = chooseClosestScheduleIndex(validSchedules, scheduleSnapshotBeforeUpdate);
             }
+            scheduleSnapshotBeforeUpdate = null;
+            hasComputedOnce = true;
+            lastComputedSemester = currentSem;
 
             document.getElementById('calendarBody').style.opacity = '1';
             activeAlternativeKey = null; 
@@ -1112,6 +1146,7 @@
         loadCatalogIndex();
 
         applyThemeMode(getThemeMode());
+        applyCalendarViewMode(getCalendarViewMode());
 
         devModeAllowOverlaps = localStorage.getItem('myScheduleDevMode') === 'true';
         syncOverlapsToggles();
@@ -1140,6 +1175,14 @@
 
         const savedElectives = localStorage.getItem('myActiveElectives');
         if (savedElectives) activeElectives = new Set(JSON.parse(savedElectives));
+
+        loadSavedSchedulesFromStorage();
+
+        // The top bar is sticky; give it a soft shadow once content slides under it.
+        const topBar = document.getElementById('topBar');
+        const syncTopBarShadow = () => topBar.classList.toggle('scrolled', window.scrollY > 4);
+        window.addEventListener('scroll', syncTopBarShadow, { passive: true });
+        syncTopBarShadow();
 
         updateUI(false); 
     };
@@ -1183,6 +1226,45 @@
 
     function updateThemeIcon(effective) {
         document.getElementById('themeToggleBtn').innerHTML = effective === 'dark' ? sunSVG : moonSVG;
+    }
+
+    // --- Mobile calendar view mode: "stack" (default, one day per card) vs
+    // "table" (the real grid, same as desktop — scroll or pinch-zoom to
+    // read it on a narrow screen). Only relevant under the 900px breakpoint;
+    // see the button's own CSS and the body:not(.force-table-view) guards
+    // in styles.css. ---
+    function getCalendarViewMode() {
+        return localStorage.getItem('myCalendarViewMode') || 'stack';
+    }
+
+    function applyCalendarViewMode(mode) {
+        document.body.classList.toggle('force-table-view', mode === 'table');
+        const btn = document.getElementById('viewModeToggleBtn');
+        if (btn) {
+            btn.innerHTML = mode === 'table' ? stackViewSVG : tableViewSVG;
+            btn.title = mode === 'table' ? 'חזרה לתצוגת רשימה' : 'החלף לתצוגת טבלה';
+        }
+
+        // Handle Zoom Cleanup/Restore
+        const content = document.getElementById('calendarTableContent');
+        if (content) {
+            if (mode === 'table') {
+                // Re-apply the zoom level when entering table mode
+                if (typeof setTableZoom === 'function') {
+                    setTableZoom(typeof currentTableZoom !== 'undefined' ? currentTableZoom : 1.0);
+                }
+            } else {
+                // Clear inline zoom and transform styles so they don't scale the list view
+                content.style.zoom = '';
+                content.style.transform = '';
+            }
+        }
+    }
+
+    function toggleCalendarViewMode() {
+        const next = getCalendarViewMode() === 'table' ? 'stack' : 'table';
+        localStorage.setItem('myCalendarViewMode', next);
+        applyCalendarViewMode(next);
     }
 
     // --- Dev mode (allow overlaps) — reachable from two places: the quick
@@ -1384,17 +1466,463 @@
         return `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
+    // Relative luminance (WCAG formula) → whether black or white text reads
+    // better on a given solid hex color.
+    function contrastTextColor(hex) {
+        const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+        const chan = [r, g, b].map(v => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        });
+        const luminance = 0.2126 * chan[0] + 0.7152 * chan[1] + 0.0722 * chan[2];
+        return luminance > 0.45 ? '#000' : '#fff';
+    }
+
+    function darkenHex(hex, factor) {
+        const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - factor));
+        const g = Math.round(parseInt(hex.slice(3, 5), 16) * (1 - factor));
+        const b = Math.round(parseInt(hex.slice(5, 7), 16) * (1 - factor));
+        return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    // Course/event box colors. These used to be painted at 65% alpha so they
+    // "blended" softly with the page behind them — fine over the near-white
+    // light-theme background, but over a dark background the same blend
+    // turns the fill into a muddy dark color while the text stayed forced
+    // black, making it unreadable (this is the dark-mode bug from the
+    // screenshot). Fixed by painting these fully opaque, as a genuine solid
+    // color chip, and choosing the text color from that color's own
+    // luminance rather than assuming black always works.
     function getCourseStyle(courseName, type, customColor) {
         if (customColor) {
-            return { bg: hexToRgba(customColor, 0.65), border: customColor };
+            return { bg: customColor, border: darkenHex(customColor, 0.35), text: contrastTextColor(customColor) };
         }
         let hash = 0;
         for (let i = 0; i < courseName.length; i++) hash = courseName.charCodeAt(i) + ((hash << 5) - hash);
         const hue = Math.abs(hash) % 360;
         const isMain = (type === 'הרצאה' || type === 'שיעור');
-        return isMain ? { bg: `hsla(${hue}, 70%, 82%, 0.65)`, border: `hsl(${hue}, 70%, 45%)` } : { bg: `hsla(${hue}, 70%, 94%, 0.65)`, border: `hsl(${hue}, 70%, 65%)` };
+        // Always a light pastel by construction (82%/94% lightness), so
+        // black text is always legible on it regardless of theme.
+        return isMain
+            ? { bg: `hsl(${hue}, 70%, 82%)`, border: `hsl(${hue}, 70%, 45%)`, text: '#000' }
+            : { bg: `hsl(${hue}, 70%, 94%)`, border: `hsl(${hue}, 70%, 65%)`, text: '#000' };
     }
 
+
+    // =====================================================================
+    // Saved schedules
+    //
+    // A saved schedule is a named snapshot of ONE semester's schedule: that
+    // semester's courses (rawCourses entries — which also carry each course's
+    // elective flag and colour; annual "שנתי" courses count for every
+    // semester they run in), which of those electives are switched on
+    // (activeElectives), and which alternative you were viewing
+    // (semesterIndices[sem]). Every semester has its own, completely
+    // separate list: the panel above the credit line shows only the saves
+    // of the semester selected in the picker, and loading one only replaces
+    // that semester's courses — the other semesters are left alone.
+    //
+    // Saves live in localStorage. A card gets a frame only while what's on
+    // screen is EXACTLY that save — same courses, same electives, same
+    // alternative number. Change anything (or browse to another
+    // alternative) and no card is framed; get back to the exact same state,
+    // or press save, and its frame is back. There is deliberately no
+    // "modified" marker of any kind.
+    //
+    // Behind the scenes the page also remembers, per semester, which save
+    // the working state was last loaded from / saved into
+    // (activeSavedScheduleIds) — only so that saving into it doesn't need a
+    // confirmation and the "unsaved changes" prompt can name it.
+    // =====================================================================
+    const SAVED_SCHEDULES_KEY = 'mySavedSchedules';
+    const ACTIVE_SAVED_SCHEDULES_KEY = 'myActiveSavedScheduleIds';   // { semester: saveId }
+    const LEGACY_ACTIVE_SAVED_SCHEDULE_KEY = 'myActiveSavedScheduleId'; // single id, from when saves covered every semester
+    const SAVED_SCHEDULE_SEMESTERS = ["א'", "ב'", "קיץ"];
+    let savedSchedules = [];           // [{ id, semester, name, savedAt, rawCourses, activeElectives, scheduleIndex }]
+    let activeSavedScheduleIds = {};   // per semester
+    let renamingSavedScheduleId = null;
+
+    const saveIconSVG = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`;
+    const trashIconSVG = `<svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
+
+    // Does this course show up in that semester's calendar?
+    function belongsToSemester(course, semester) {
+        return course.semester === semester || course.semester === "שנתי";
+    }
+
+    // The first version of this feature saved every semester in one snapshot.
+    // Split those into one save per semester that actually has courses, so
+    // nothing anyone already saved is lost.
+    function migrateLegacySavedSchedules(list) {
+        const out = [];
+        let changed = false;
+        list.forEach(s => {
+            if (s.semester) { out.push(s); return; }
+            changed = true;
+            const indices = s.semesterIndices || {};
+            let semesters = SAVED_SCHEDULE_SEMESTERS.filter(sem => s.rawCourses.some(c => c.semester === sem));
+            if (semesters.length === 0 && s.rawCourses.length > 0) semesters = ["א'"];  // only annual courses
+            semesters.forEach((sem, i) => {
+                const courses = s.rawCourses.filter(c => belongsToSemester(c, sem));
+                const names = new Set(courses.map(c => c.name));
+                out.push({
+                    id: i === 0 ? s.id : `${s.id}_${i}`,
+                    semester: sem,
+                    name: s.name,
+                    savedAt: s.savedAt,
+                    rawCourses: courses,
+                    activeElectives: (s.activeElectives || []).filter(n => names.has(n)),
+                    scheduleIndex: indices[sem] || 0
+                });
+            });
+        });
+        return { list: out, changed };
+    }
+
+    function loadSavedSchedulesFromStorage() {
+        let list = [];
+        try {
+            const raw = localStorage.getItem(SAVED_SCHEDULES_KEY);
+            const parsed = raw ? JSON.parse(raw) : [];
+            list = Array.isArray(parsed)
+                ? parsed.filter(s => s && s.id && typeof s.name === 'string' && Array.isArray(s.rawCourses))
+                : [];
+        } catch (err) {
+            console.error('Failed to parse saved schedules — starting with none.', err);
+        }
+        const migrated = migrateLegacySavedSchedules(list);
+        savedSchedules = migrated.list;
+
+        try {
+            const parsedActive = JSON.parse(localStorage.getItem(ACTIVE_SAVED_SCHEDULES_KEY) || '{}');
+            activeSavedScheduleIds = (parsedActive && typeof parsedActive === 'object') ? parsedActive : {};
+        } catch (err) {
+            activeSavedScheduleIds = {};
+        }
+        const legacyActiveId = localStorage.getItem(LEGACY_ACTIVE_SAVED_SCHEDULE_KEY);
+        if (legacyActiveId) {
+            const entry = savedSchedules.find(s => s.id === legacyActiveId);
+            if (entry && !activeSavedScheduleIds[entry.semester]) activeSavedScheduleIds[entry.semester] = entry.id;
+        }
+        Object.keys(activeSavedScheduleIds).forEach(sem => {
+            if (!savedSchedules.some(s => s.id === activeSavedScheduleIds[sem] && s.semester === sem)) delete activeSavedScheduleIds[sem];
+        });
+
+        if (migrated.changed || legacyActiveId !== null) persistSavedSchedules();
+    }
+
+    function persistSavedSchedules() {
+        try {
+            localStorage.setItem(SAVED_SCHEDULES_KEY, JSON.stringify(savedSchedules));
+            localStorage.setItem(ACTIVE_SAVED_SCHEDULES_KEY, JSON.stringify(activeSavedScheduleIds));
+            localStorage.removeItem(LEGACY_ACTIVE_SAVED_SCHEDULE_KEY);
+            return true;
+        } catch (err) {
+            console.error('Failed to persist saved schedules.', err);
+            alert("לא ניתן לשמור במערכת השמורות — ייתכן שהאחסון בדפדפן מלא.");
+            return false;
+        }
+    }
+
+    // --- the selected semester's slice of the working state ---
+    function currentSemesterState() {
+        const semester = getCurrentSemester();
+        const courses = rawCourses.filter(c => belongsToSemester(c, semester));
+        const names = new Set(courses.map(c => c.name));
+        return {
+            semester,
+            courses,
+            electives: Array.from(activeElectives).filter(n => names.has(n)),
+            index: semesterIndices[semester] || 0
+        };
+    }
+
+    function snapshotCurrentSchedule() {
+        const st = currentSemesterState();
+        return {
+            semester: st.semester,
+            rawCourses: JSON.parse(JSON.stringify(st.courses)),
+            activeElectives: st.electives,
+            scheduleIndex: st.index
+        };
+    }
+
+    // `content` = courses + electives (what "unsaved work" means);
+    // `full` also includes which alternative is on screen (what gets a card framed).
+    function scheduleSignatures(courses, electives, index) {
+        const sorted = courses.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        const content = JSON.stringify([sorted, Array.from(electives).sort()]);
+        return { content, full: content + '#' + (index || 0) };
+    }
+    function currentSignatures() {
+        const st = currentSemesterState();
+        return scheduleSignatures(st.courses, st.electives, st.index);
+    }
+    function savedSignatures(saved) {
+        return scheduleSignatures(saved.rawCourses, saved.activeElectives || [], saved.scheduleIndex);
+    }
+
+    function getSavedSchedulesForCurrentSemester() {
+        const semester = getCurrentSemester();
+        return savedSchedules.filter(s => s.semester === semester);
+    }
+    function getActiveSavedScheduleId() { return activeSavedScheduleIds[getCurrentSemester()] || null; }
+    function setActiveSavedScheduleId(id) {
+        const semester = getCurrentSemester();
+        if (id) activeSavedScheduleIds[semester] = id; else delete activeSavedScheduleIds[semester];
+    }
+    function getActiveSavedSchedule() {
+        const id = getActiveSavedScheduleId();
+        return getSavedSchedulesForCurrentSemester().find(s => s.id === id) || null;
+    }
+
+    // True when replacing this semester's courses would lose something
+    // that isn't stored in a save yet.
+    function hasUnsavedWork() {
+        if (currentSemesterState().courses.length === 0) return false;
+        const cur = currentSignatures().content;
+        return !getSavedSchedulesForCurrentSemester().some(s => savedSignatures(s).content === cur);
+    }
+
+    // The working state was replaced wholesale (clear all / import) — it's no
+    // longer "the same schedule" as anything that was loaded before.
+    function detachFromSavedSchedule() {
+        if (Object.keys(activeSavedScheduleIds).length === 0) return;
+        activeSavedScheduleIds = {};
+        persistSavedSchedules();
+    }
+
+    // "טיוטה 1", "טיוטה 2", … — the first number not already taken in this
+    // semester. New saves go straight into rename mode, so this is only a
+    // starting point.
+    function nextDefaultScheduleName() {
+        const used = new Set(getSavedSchedulesForCurrentSemester().map(s => s.name));
+        let n = 1;
+        while (used.has(`טיוטה ${n}`)) n++;
+        return `טיוטה ${n}`;
+    }
+
+    function describeSavedSchedule(saved) {
+        const courseNames = new Set(saved.rawCourses.map(c => c.name));
+        const electiveNames = new Set(saved.rawCourses.filter(c => c.isElective).map(c => c.name));
+        const enabled = new Set(saved.activeElectives || []);
+        const enabledCount = [...electiveNames].filter(n => enabled.has(n)).length;
+
+        let text = courseNames.size === 1 ? 'קורס אחד' : `${courseNames.size} קורסים`;
+        if (electiveNames.size > 0) text += ` · בחירה: ${enabledCount}/${electiveNames.size}`;
+        return text;
+    }
+
+    function saveCurrentAsNewSchedule() {
+        if (currentSemesterState().courses.length === 0) return alert("המערכת ריקה בסמסטר זה — הוסיפו קורסים לפני השמירה.");
+
+        const entry = {
+            id: 'ss_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+            name: nextDefaultScheduleName(),
+            savedAt: Date.now(),
+            ...snapshotCurrentSchedule()
+        };
+        savedSchedules.push(entry);
+        setActiveSavedScheduleId(entry.id);
+        renamingSavedScheduleId = entry.id;  // straight into naming it
+        persistSavedSchedules();
+        renderSavedSchedules();
+    }
+
+    // Overwrite a save with what's on screen right now.
+    function overwriteSavedSchedule(id) {
+        const saved = savedSchedules.find(s => s.id === id);
+        if (!saved) return;
+        if (currentSemesterState().courses.length === 0) return alert("המערכת ריקה בסמסטר זה — אין מה לשמור.");
+        // Saving into the schedule you're working on is the normal "save"; only
+        // overwriting a *different* one deserves a confirmation.
+        if (id !== getActiveSavedScheduleId() && !confirm(`לדרוס את "${saved.name}" במערכת שמוצגת עכשיו?`)) return;
+
+        Object.assign(saved, snapshotCurrentSchedule(), { savedAt: Date.now() });
+        setActiveSavedScheduleId(id);
+        persistSavedSchedules();
+        renderSavedSchedules();
+        showToast(`"${saved.name}" נשמרה ✓`);
+    }
+
+    function loadSavedSchedule(id) {
+        const saved = savedSchedules.find(s => s.id === id);
+        if (!saved || saved.semester !== getCurrentSemester()) return;
+        const semester = saved.semester;
+
+        // Already showing exactly this one.
+        if (currentSignatures().full === savedSignatures(saved).full) {
+            setActiveSavedScheduleId(id);
+            persistSavedSchedules();
+            renderSavedSchedules();
+            return;
+        }
+
+        if (hasUnsavedWork()) {
+            const active = getActiveSavedSchedule();
+            const where = active ? `ב"${active.name}"` : 'במערכת הנוכחית';
+            if (!confirm(`יש שינויים שלא נשמרו ${where}.\nלטעון את "${saved.name}" בכל זאת?`)) return;
+        }
+
+        saveState(true);  // keeps what was on screen in the undo history
+
+        // Swap in only this semester's courses; every other semester stays put.
+        const oldNames = new Set(rawCourses.filter(c => belongsToSemester(c, semester)).map(c => c.name));
+        const keptCourses = rawCourses.filter(c => !belongsToSemester(c, semester));
+        const keptNames = new Set(keptCourses.map(c => c.name));
+        const savedCourses = JSON.parse(JSON.stringify(saved.rawCourses));
+        const savedNames = new Set(savedCourses.map(c => c.name));
+        const savedActive = new Set(saved.activeElectives || []);
+
+        rawCourses = keptCourses.concat(savedCourses);
+        // Electives are tracked by course name, so only touch the names that
+        // belong to this semester's courses (before or after the swap).
+        oldNames.forEach(n => { if (!savedNames.has(n) && !keptNames.has(n)) activeElectives.delete(n); });
+        savedNames.forEach(n => {
+            if (savedActive.has(n)) activeElectives.add(n);
+            else if (!keptNames.has(n)) activeElectives.delete(n);
+        });
+        semesterIndices[semester] = saved.scheduleIndex || 0;
+
+        setActiveSavedScheduleId(id);
+        activeAlternativeKey = null;
+        pendingAlternativeJump = null;
+
+        saveState(false);          // persist the loaded state so a reload keeps it
+        persistSavedSchedules();   // ...and which save it came from
+        refreshCoursePickers();    // an open search/preview shows "already added" state
+        // Same as opening the page fresh: honour the saved alternative
+        // number instead of hunting for the closest match to the previous
+        // schedule (see importData()).
+        hasComputedOnce = false;
+        updateUI(false);
+    }
+
+    function startRenameSavedSchedule(id) {
+        renamingSavedScheduleId = id;
+        renderSavedSchedules();
+    }
+
+    function commitRenameSavedSchedule(id, value) {
+        // Guard: re-rendering removes the input, which fires its blur handler
+        // again — by then renamingSavedScheduleId is already cleared.
+        if (renamingSavedScheduleId !== id) return;
+        renamingSavedScheduleId = null;
+
+        const saved = savedSchedules.find(s => s.id === id);
+        const name = (value || '').trim().slice(0, 40);
+        if (saved && name && name !== saved.name) {
+            saved.name = name;
+            persistSavedSchedules();
+        }
+        renderSavedSchedules();
+    }
+
+    function cancelRenameSavedSchedule() {
+        renamingSavedScheduleId = null;
+        renderSavedSchedules();
+    }
+
+    function deleteSavedSchedule(id) {
+        const saved = savedSchedules.find(s => s.id === id);
+        if (!saved) return;
+        if (!confirm(`למחוק את המערכת השמורה "${saved.name}"?`)) return;
+
+        savedSchedules = savedSchedules.filter(s => s.id !== id);
+        if (activeSavedScheduleIds[saved.semester] === id) delete activeSavedScheduleIds[saved.semester];
+        if (renamingSavedScheduleId === id) renamingSavedScheduleId = null;
+        persistSavedSchedules();
+        renderSavedSchedules();
+    }
+
+    function renderSavedSchedules() {
+        const listEl = document.getElementById('savedSchedulesList');
+        const titleEl = document.getElementById('savedSchedulesTitle');
+        if (!listEl) return;
+
+        // Don't yank the name field out from under someone who's typing in it
+        // (this gets called after every solver run and alternative change).
+        const focused = document.activeElement;
+        if (renamingSavedScheduleId && focused && focused.classList && focused.classList.contains('saved-schedule-rename-input')) return;
+
+        const semester = getCurrentSemester();
+        const semesterLabel = semester === 'קיץ' ? 'קיץ' : `סמסטר ${semester}`;
+        const visible = getSavedSchedulesForCurrentSemester();
+        // A rename that was open in another semester is void.
+        if (renamingSavedScheduleId && !visible.some(s => s.id === renamingSavedScheduleId)) renamingSavedScheduleId = null;
+
+        listEl.innerHTML = '';
+        if (titleEl) titleEl.textContent = `מערכות שמורות · ${semesterLabel}`;
+
+        // Names are user-typed, so everything below goes in via textContent /
+        // DOM properties rather than innerHTML.
+        const make = (tag, className, text) => {
+            const node = document.createElement(tag);
+            if (className) node.className = className;
+            if (text !== undefined) node.textContent = text;
+            return node;
+        };
+        const makeIconButton = (svg, title, onClick) => {
+            const btn = make('button', 'icon-btn');
+            btn.innerHTML = svg;   // constant, trusted markup
+            btn.title = title;
+            btn.setAttribute('aria-label', title);
+            btn.onclick = onClick;
+            return btn;
+        };
+
+        if (visible.length === 0) {
+            listEl.appendChild(make('div', 'saved-schedules-empty',
+                `עדיין אין מערכות שמורות ל${semesterLabel}. לחצו על "שמור מערכת נוכחית" כדי לשמור את הקורסים, קורסי הבחירה שנבחרו והמערכת שמוצגת — לכל סמסטר יש רשימה משלו.`));
+            return;
+        }
+
+        const currentFull = currentSignatures().full;
+        const activeId = getActiveSavedScheduleId();
+
+        visible.forEach(saved => {
+            // Framed only while what's on screen is exactly this save.
+            const isExact = currentFull === savedSignatures(saved).full;
+
+            const card = make('div', 'saved-schedule-card' + (isExact ? ' active' : ''));
+
+            if (saved.id === renamingSavedScheduleId) {
+                const input = make('input', 'saved-schedule-rename-input');
+                input.type = 'text';
+                input.value = saved.name;
+                input.maxLength = 40;
+                input.setAttribute('aria-label', 'שם המערכת');
+                input.onkeydown = (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitRenameSavedSchedule(saved.id, input.value); }
+                    else if (e.key === 'Escape') { e.preventDefault(); cancelRenameSavedSchedule(); }
+                };
+                input.onblur = () => commitRenameSavedSchedule(saved.id, input.value);
+                card.appendChild(input);
+                listEl.appendChild(card);
+                // Has to happen once the input is in the document.
+                input.focus();
+                input.select();
+                return;
+            }
+
+            const main = make('button', 'saved-schedule-main');
+            main.title = 'טען מערכת זו';
+            main.appendChild(make('span', 'saved-schedule-name', saved.name));
+            main.appendChild(make('span', 'saved-schedule-meta', describeSavedSchedule(saved)));
+            main.onclick = () => loadSavedSchedule(saved.id);
+            card.appendChild(main);
+
+            const actions = make('div', 'saved-schedule-actions');
+            actions.appendChild(makeIconButton(saveIconSVG,
+                saved.id === activeId ? 'שמור את המערכת הנוכחית כאן' : 'שמור את המערכת הנוכחית במקום מערכת זו',
+                () => overwriteSavedSchedule(saved.id)));
+            actions.appendChild(makeIconButton(editIconSVG, 'שנה שם', () => startRenameSavedSchedule(saved.id)));
+            actions.appendChild(makeIconButton(trashIconSVG, 'מחק', () => deleteSavedSchedule(saved.id)));
+            card.appendChild(actions);
+
+            listEl.appendChild(card);
+        });
+    }
 
     // --- Import / Export ---
     function exportData() {
@@ -1415,42 +1943,176 @@
         downloadAnchorNode.remove();
     }
 
-    function exportToImage(format) {
-        const calendar = document.querySelector('.calendar-wrapper');
-        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
-        
-        if (typeof html2canvas === 'undefined') {
+    // Loads html2canvas from the CDN on first use (same URL the PDF export uses).
+    function ensureHtml2canvas() {
+        if (typeof html2canvas !== 'undefined') return Promise.resolve();
+        return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-            script.onload = () => runImageCapture(calendar, format);
+            script.onload = () => resolve();
+            script.onerror = () => reject(new Error('Failed to load html2canvas'));
             document.head.appendChild(script);
-        } else {
-            runImageCapture(calendar, format);
-        }
+        });
     }
 
-    function runImageCapture(calendar, format) {
+    // Renders the calendar to a canvas the way every image export wants it:
+    // per-box action buttons hidden, `.exporting` styling on, and both put
+    // back afterwards whether the capture worked or not.
+    function captureCalendarCanvas(calendar) {
         const actions = document.querySelectorAll('.box-actions');
         actions.forEach(a => a.style.display = 'none');
         calendar.classList.add('exporting');
-        
-        const bgColor = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
 
-        html2canvas(calendar, { 
-            backgroundColor: bgColor,
-            scale: 2 
-        }).then(canvas => {
+        const bgColor = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
+        const restore = () => {
             calendar.classList.remove('exporting');
             actions.forEach(a => a.style.display = 'flex');
+        };
+
+        return html2canvas(calendar, {
+            backgroundColor: bgColor,
+            scale: 2
+        }).then(canvas => {
+            restore();
+            return canvas;
+        }, err => {
+            restore();
+            throw err;
+        });
+    }
+
+    function exportToImage(format) {
+        const calendar = document.querySelector('.calendar-wrapper');
+        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
+
+        ensureHtml2canvas()
+            .then(() => runImageCapture(calendar, format))
+            .catch(() => alert("אירעה שגיאה בייצוא התמונה."));
+    }
+
+    function runImageCapture(calendar, format) {
+        return captureCalendarCanvas(calendar).then(canvas => {
             const link = document.createElement('a');
             link.download = `Schedule_${getCurrentSemester()}.${format}`;
             link.href = canvas.toDataURL(`image/${format}`);
             link.click();
         }).catch(err => {
-            calendar.classList.remove('exporting');
-            actions.forEach(a => a.style.display = 'flex');
             alert("אירעה שגיאה בייצוא התמונה.");
         });
+    }
+
+    // Same picture as the PNG export, but put on the clipboard instead of
+    // downloaded. The clipboard only reliably takes PNG, so there's no JPG
+    // variant. Needs a secure context (https or localhost) and a browser that
+    // supports ClipboardItem (Chrome/Edge/Safari; Firefox 127+).
+    function exportToClipboard() {
+        const calendar = document.querySelector('.calendar-wrapper');
+        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
+
+        if (!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === 'undefined') {
+            return alert("הדפדפן לא תומך בהעתקת תמונה ללוח (נדרש דפדפן עדכני ואתר מאובטח).\nאפשר להשתמש בייצוא כתמונה (PNG) במקום.");
+        }
+
+        showToast('מכין תמונה…', 15000);
+
+        // The image takes a moment to render, and Safari only lets
+        // clipboard.write() run inside the click that started it — so the
+        // ClipboardItem is created right now, holding a *promise* of the
+        // PNG, and the browser waits for it.
+        const pngBlobPromise = ensureHtml2canvas()
+            .then(() => captureCalendarCanvas(calendar))
+            .then(canvas => new Promise((resolve, reject) => {
+                canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('canvas.toBlob returned null')), 'image/png');
+            }));
+
+        // The clipboard call below reports a failed render to the user; this
+        // no-op branch just stops the browser also logging it as an
+        // "unhandled rejection" (the ClipboardItem consumes the promise
+        // internally, which JS can't see).
+        pngBlobPromise.catch(() => {});
+
+        navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlobPromise })])
+            .then(() => showToast('התמונה הועתקה ללוח ✓'))
+            .catch(err => {
+                console.error('Copy to clipboard failed:', err);
+                showToast('');
+                alert("לא הצלחנו להעתיק את התמונה ללוח.\nייתכן שהדפדפן חסם את הגישה ללוח — אפשר להשתמש בייצוא כתמונה (PNG) במקום.");
+            });
+    }
+
+    // The export menu opens on hover with a mouse. Touch screens have no hover
+    // (and a tap-emulated one is unreliable), so there a tap on the button
+    // toggles it, and tapping anywhere else — or an item — closes it again.
+    function toggleExportMenu(e) {
+        if (window.matchMedia('(hover: hover)').matches) return;   // mouse: CSS :hover handles it
+        e.stopPropagation();
+        document.querySelector('.dropdown').classList.toggle('open');
+    }
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+    });
+
+    // --- Keyboard shortcuts ---
+    //   ← / →   move between semesters (RTL: ← = next, → = previous)
+    //   Ctrl/⌘+C copy the schedule image to the clipboard, but only when
+    //           nothing is selected — real text copying is never hijacked
+    // Both stay out of the way while typing in a field or with a dialog open.
+    function canCopyScheduleImage() {
+        return !!(window.isSecureContext && navigator.clipboard && navigator.clipboard.write && typeof ClipboardItem !== 'undefined');
+    }
+
+    function handleGlobalShortcuts(e) {
+        if (e.defaultPrevented || e.isComposing) return;
+        if (document.querySelector('dialog[open]')) return;
+
+        const t = e.target;
+        const tag = t && t.tagName;
+        const typing = !!t && (t.isContentEditable || tag === 'TEXTAREA' ||
+            (tag === 'INPUT' && !['checkbox', 'button', 'submit', 'reset'].includes(t.type)));
+        if (typing) return;
+
+        // e.code as well as e.key: on a Hebrew keyboard layout Ctrl+C reports
+        // e.key === 'ב', but e.code is still 'KeyC'.
+        const isCopy = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey &&
+            (e.code === 'KeyC' || (e.key && e.key.toLowerCase() === 'c'));
+        if (isCopy) {
+            const selection = window.getSelection ? window.getSelection().toString() : '';
+            if (selection) return;   // the person is copying text
+            if (!canCopyScheduleImage()) return;
+            if (validSchedules.length === 0 || currentSemesterState().courses.length === 0) return;
+            e.preventDefault();
+            exportToClipboard();
+            return;
+        }
+
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+            const select = document.getElementById('semesterSelect');
+            if (!select || tag === 'SELECT') return;   // a focused <select> already reacts to the arrows itself
+            const next = select.selectedIndex + (e.key === 'ArrowLeft' ? 1 : -1);
+            if (next < 0 || next >= select.options.length) return;
+            e.preventDefault();
+            select.selectedIndex = next;
+            onSemesterChange();
+        }
+    }
+    document.addEventListener('keydown', handleGlobalShortcuts);
+
+    let toastTimer = null;
+    // Empty message hides the toast immediately.
+    function showToast(message, duration = 2200) {
+        let toast = document.getElementById('appToast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'appToast';
+            toast.setAttribute('role', 'status');
+            toast.setAttribute('aria-live', 'polite');
+            document.body.appendChild(toast);
+        }
+        clearTimeout(toastTimer);
+        if (!message) { toast.classList.remove('visible'); return; }
+        toast.textContent = message;
+        toast.classList.add('visible');
+        toastTimer = setTimeout(() => toast.classList.remove('visible'), duration);
     }
 
     function exportToPDF() {
@@ -1531,6 +2193,14 @@
                     throw new Error("Invalid format");
                 }
 
+                // This is an entirely new course list, not an edit to the
+                // current one — comparing it against whatever schedule was
+                // on screen before the import would be meaningless. Treat it
+                // like a fresh page load instead, so updateUI() honors the
+                // imported (or reset) semesterIndices directly rather than
+                // hunting for "the closest match" to the pre-import schedule.
+                hasComputedOnce = false;
+                detachFromSavedSchedule();
                 updateUI(false);
                 alert("הנתונים יובאו בהצלחה!");
             } catch (err) { 
@@ -1755,6 +2425,59 @@
         }
     }
 
+    // Key the solver itself uses for a "slot to fulfill" — one per
+    // course-name+type (e.g. "אלגברה לינארית 1 (תרגיל)") — see
+    // `groupsToFulfill` inside initWorker()'s worker script. Used here to
+    // compare two concrete schedules slot-by-slot rather than session-entry
+    // by session-entry (one group can have several weekly sessions, i.e.
+    // several entries sharing one slot).
+    function scheduleSlotKey(c) { return `${c.name} (${c.type})`; }
+
+    /** For a concrete schedule (one array of the individual session entries
+     * the solver returns), returns { slotKey: groupId } — the specific
+     * group chosen for every slot in it. groupId is courseGroupId (or, for
+     * a manually-entered/no-group session, its own id) — the same identity
+     * the worker groups alternatives by (`optionKey` in initWorker()). */
+    function scheduleGroupChoices(schedule) {
+        const choices = {};
+        for (const c of schedule) {
+            choices[scheduleSlotKey(c)] = c.courseGroupId || c.id;
+        }
+        return choices;
+    }
+
+    /** Picks, among the newly computed candidate schedules, the one that
+     * keeps the most slots assigned to the SAME group as `previousSchedule`
+     * — i.e. the smallest possible change from what was on screen before
+     * this add/remove/edit. This is what lets adding a course into an empty
+     * slot leave every other course untouched, and — when that's not
+     * possible — moves as few other courses as possible instead of
+     * reshuffling the whole schedule. Falls back to index 0 (the solver's
+     * own best-first ordering) when there's no previous schedule to compare
+     * against, or nothing in it survived into any candidate. */
+    function chooseClosestScheduleIndex(candidates, previousSchedule) {
+        if (candidates.length === 0) return 0;
+        if (!previousSchedule || previousSchedule.length === 0) return 0;
+
+        const previousChoices = scheduleGroupChoices(previousSchedule);
+        let bestIdx = 0;
+        let bestScore = -1;
+        candidates.forEach((sched, idx) => {
+            const choices = scheduleGroupChoices(sched);
+            let score = 0;
+            for (const slotKey in previousChoices) {
+                if (choices[slotKey] === previousChoices[slotKey]) score++;
+            }
+            // Candidates are already sorted best-first by the solver — ties
+            // keep whichever came first, i.e. the objectively "nicer" one.
+            if (score > bestScore) {
+                bestScore = score;
+                bestIdx = idx;
+            }
+        });
+        return bestIdx;
+    }
+
     function updateUI(pushHistory = true) {
         if (pushHistory) saveState(true);
         document.getElementById('undoBtn').disabled = historyStack.length === 0;
@@ -1765,10 +2488,23 @@
         rawCourses.forEach(c => { if(c.isElective) nameStatusMap[c.name] = true; });
         rawCourses.forEach(c => { c.isElective = !!nameStatusMap[c.name]; });
 
+        // Every edit / undo / elective toggle comes through here, so this is
+        // where the "modified" marker on the active saved schedule is kept
+        // up to date.
+        renderSavedSchedules();
+
         const statusEl = document.getElementById('scheduleStatus');
         statusEl.innerText = 'מחשב אפשרויות... ⏳';
         statusEl.style.color = 'var(--text-muted)';
         document.getElementById('calendarBody').style.opacity = '0.4';
+
+        // Only meaningful to compare against the schedule that was showing
+        // if we're recomputing the SAME semester we last solved — right
+        // after a semester switch (or on first load) validSchedules still
+        // holds a different semester's schedules entirely, so there's
+        // nothing valid here to snapshot.
+        const sameSemesterAsLastCompute = hasComputedOnce && lastComputedSemester === currentSem;
+        scheduleSnapshotBeforeUpdate = sameSemesterAsLastCompute ? (validSchedules[semesterIndices[currentSem]] || []) : null;
 
         scheduleWorker.postMessage({
             rawCourses: rawCourses,
@@ -1798,6 +2534,10 @@
             statusEl.style.fontSize = '18px';
             statusEl.title = '';
         }
+
+        // Which saved card is framed depends on which alternative is
+        // showing, and every change of it comes through here.
+        renderSavedSchedules();
     }
 
     function changeSchedule(step) {
@@ -2075,6 +2815,7 @@
             el.style.height = `${height}px`;
             el.style.backgroundColor = colors.bg;
             el.style.borderColor = colors.border;
+            el.style.color = colors.text;
             el.title = added ? 'לחיצה להסרה' : 'לחיצה לבחירה';
             el.onclick = () => pickPreviewGroup(cls.id);
             el.innerHTML = `
@@ -2094,6 +2835,7 @@
         el.style.height = `${height}px`;
         el.style.backgroundColor = colors.bg;
         el.style.borderColor = colors.border;
+        el.style.color = colors.text;
         el.style.setProperty('--event-bg', colors.bg);
 
         const courseKey = `${cls.name} - ${cls.type}`;
@@ -2113,6 +2855,7 @@
             const existsInValid = validSchedules.some(s => s.some(c => c.id === cls.id));
             
             if (conflictingClass) {
+                el.style.color = 'var(--text-main)';
                 if (devModeAllowOverlaps) {
                     el.style.borderColor = 'var(--danger)';
                     el.style.backgroundColor = 'rgba(231, 76, 60, 0.1)';
@@ -2560,24 +3303,158 @@
             rawCourses = []; historyStack = []; activeElectives.clear();
             semesterIndices = { "א'": 0, "ב'": 0, "קיץ": 0 };
             localStorage.removeItem('mySchedulesHistory');
+            detachFromSavedSchedule();
             updateUI(false);
         }
+    }
+
+    // Extra rows added via "+ הוסף מפגש נוסף": each is a fully independent
+    // course entry (own type, semester, day/time, elective status) that
+    // shares only the course NAME typed in the main field above — a quick
+    // way to add several sections of one course (e.g. its הרצאה AND תרגיל)
+    // without reopening this dialog. They are NOT tied to the main row via
+    // courseGroupId; each is saved as its own rawCourses entry, exactly as
+    // if it had been added on a separate visit to this dialog. Reset to
+    // empty every time the dialog opens (openManualAdd()/openManualEditDialog()).
+    let extraSessionRowCount = 0;
+
+    function onExtraTypeChange(selectEl) {
+        const custom = selectEl.closest('.session-row').querySelector('.extraSessionTypeCustom');
+        custom.style.display = selectEl.value === '__custom__' ? 'block' : 'none';
+    }
+
+    function addExtraSessionRow() {
+        extraSessionRowCount++;
+        const wrap = document.createElement('div');
+        wrap.className = 'session-row extra';
+        wrap.dataset.sessionRow = 'extraSession' + extraSessionRowCount;
+        wrap.innerHTML = `
+            <div class="session-row-header">
+                <span>שורה נוספת לאותו שם קורס</span>
+                <button type="button" class="session-row-remove" onclick="this.closest('.session-row').remove()" title="הסר שורה זו">✕</button>
+            </div>
+            <div class="form-group">
+                <label>סוג</label>
+                <select class="extraSessionType" onchange="onExtraTypeChange(this)">
+                    <option value="הרצאה">הרצאה</option>
+                    <option value="תרגיל">תרגיל</option>
+                    <option value="מעבדה">מעבדה</option>
+                    <option value='שו"ת'>שו"ת</option>
+                    <option value="סדנא">סדנא</option>
+                    <option value="תגבור">תגבור</option>
+                    <option value="שיעור">שיעור (אחר)</option>
+                    <option value="__custom__">מותאם אישית...</option>
+                </select>
+                <input type="text" class="extraSessionTypeCustom" placeholder="הקלד סוג מותאם אישית" style="display:none; margin-top:8px;">
+            </div>
+            <div class="form-group">
+                <label>סמסטר</label>
+                <select class="extraSessionSemester">
+                    <option value="א'">א'</option>
+                    <option value="ב'">ב'</option>
+                    <option value="שנתי">שנתי</option>
+                    <option value="קיץ">קיץ</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>יום</label>
+                <select class="extraSessionDay">
+                    <option value="א">ראשון</option>
+                    <option value="ב">שני</option>
+                    <option value="ג">שלישי</option>
+                    <option value="ד">רביעי</option>
+                    <option value="ה">חמישי</option>
+                    <option value="ו">שישי</option>
+                </select>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>שעת התחלה</label>
+                    <input type="time" class="extraSessionStart" value="08:00">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>שעת סיום</label>
+                    <input type="time" class="extraSessionEnd" value="10:00">
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="toggle-label" style="font-weight:normal; font-size:13px;">
+                    <div class="switch">
+                        <input type="checkbox" class="extraSessionElective">
+                        <span class="slider"></span>
+                    </div>
+                    סמן שורה זו כבחירה (ולא חובה)
+                </label>
+            </div>
+        `;
+        wrap.querySelector('.extraSessionSemester').value = document.getElementById('editSemester').value;
+        document.getElementById('editSessionsList').appendChild(wrap);
+    }
+
+    function clearExtraSessionRows() {
+        document.getElementById('editSessionsList').querySelectorAll('.session-row.extra').forEach(el => el.remove());
+    }
+
+    function collectExtraSessions() {
+        return Array.from(document.getElementById('editSessionsList').querySelectorAll('.session-row.extra')).map(row => {
+            const typeSel = row.querySelector('.extraSessionType').value;
+            const type = typeSel === '__custom__' ? row.querySelector('.extraSessionTypeCustom').value.trim() : typeSel;
+            return {
+                type,
+                semester: row.querySelector('.extraSessionSemester').value,
+                day: row.querySelector('.extraSessionDay').value,
+                start: row.querySelector('.extraSessionStart').value,
+                end: row.querySelector('.extraSessionEnd').value,
+                isElective: row.querySelector('.extraSessionElective').checked
+            };
+        });
+    }
+
+    // Built-in options in #editType — anything else means a course was saved
+    // with a free-text custom type, so the form should reopen on "מותאם
+    // אישית..." with that text filled in rather than silently falling back
+    // to a built-in value. See onEditTypeChange()/openManualEditDialog().
+    const EDIT_TYPE_BUILTINS = ['הרצאה', 'תרגיל', 'מעבדה', 'שו"ת', 'סדנא', 'תגבור', 'שיעור'];
+
+    function onEditTypeChange() {
+        const isCustom = document.getElementById('editType').value === '__custom__';
+        document.getElementById('editTypeCustom').style.display = isCustom ? 'block' : 'none';
+    }
+
+    function getEditTypeValue() {
+        const sel = document.getElementById('editType').value;
+        if (sel === '__custom__') return document.getElementById('editTypeCustom').value.trim();
+        return sel;
+    }
+
+    function setEditTypeValue(type) {
+        if (EDIT_TYPE_BUILTINS.includes(type)) {
+            document.getElementById('editType').value = type;
+            document.getElementById('editTypeCustom').value = '';
+        } else {
+            document.getElementById('editType').value = '__custom__';
+            document.getElementById('editTypeCustom').value = type || '';
+        }
+        onEditTypeChange();
     }
 
     function openManualAdd() {
         document.getElementById('editId').value = '';
         document.getElementById('editName').value = '';
-        document.getElementById('editType').value = 'הרצאה';
+        setEditTypeValue('הרצאה');
         document.getElementById('editSemester').value = getCurrentSemester() || "א'";
         document.getElementById('editDay').value = 'א';
         document.getElementById('editStart').value = '08:00';
         document.getElementById('editEnd').value = '10:00';
         document.getElementById('editColor').value = '#4a90e2';
         document.getElementById('editUseCustomColor').checked = false;
-        
+        document.getElementById('editElectiveToggle').checked = false;
+        clearExtraSessionRows();
+
         document.getElementById('editDeleteBtn').style.display = 'none';
         document.getElementById('editDialogTitle').innerText = 'הוספת שיעור';
         document.getElementById('pasteAddSection').style.display = 'block';
+        document.getElementById('editElectiveSection').style.display = 'block';
         document.getElementById('editDialog').showModal();
     }
 
@@ -2622,11 +3499,12 @@
         if(!c) return;
         document.getElementById('editId').value = c.id;
         document.getElementById('editName').value = c.name;
-        document.getElementById('editType').value = c.type;
+        setEditTypeValue(c.type);
         document.getElementById('editSemester').value = c.semester;
         document.getElementById('editDay').value = c.day;
         document.getElementById('editStart').value = c.start;
         document.getElementById('editEnd').value = c.end;
+        clearExtraSessionRows();
 
         if (c.color) {
             document.getElementById('editColor').value = c.color;
@@ -2639,6 +3517,11 @@
         document.getElementById('editDeleteBtn').style.display = 'inline-block';
         document.getElementById('editDialogTitle').innerText = 'עריכת שיעור';
         document.getElementById('pasteAddSection').style.display = 'none';
+        // Elective status while editing is changed via the ✔ בחירה button on
+        // the course row (updateUI()'s nameStatusMap), not this dialog — see
+        // README "Fixed: marking a course בחירה via search...". Hide it here
+        // exactly like the paste box, per the same "new class only" rule.
+        document.getElementById('editElectiveSection').style.display = 'none';
         document.getElementById('editDialog').showModal();
     }
 
@@ -2654,36 +3537,147 @@
     function saveEdit() {
         const id = document.getElementById('editId').value;
         const name = document.getElementById('editName').value.trim();
-        const type = document.getElementById('editType').value;
+        const type = getEditTypeValue();
         const semester = document.getElementById('editSemester').value;
         const day = document.getElementById('editDay').value;
         const start = document.getElementById('editStart').value;
         const end = document.getElementById('editEnd').value;
-        
+        const extraEntries = collectExtraSessions();
+
         const useCustomColor = document.getElementById('editUseCustomColor').checked;
         const color = useCustomColor ? document.getElementById('editColor').value : null;
 
-        if (!name || !start || !end) return alert("אנא מלא את כל השדות");
+        if (!name || !type || !start || !end) return alert("אנא מלא את כל השדות");
+        for (const s of extraEntries) {
+            if (!s.type || !s.start || !s.end) return alert("אנא מלא סוג, יום ושעות לכל שורה נוספת, או הסר אותה.");
+        }
 
-        if (id) {
-            const c = rawCourses.find(c => c.id === id);
-            if(c) {
-                c.name = name; c.type = type; c.semester = semester; 
-                c.day = day; c.start = start; c.end = end; c.color = color;
-            }
-        } else {
-            const isDup = rawCourses.some(c => 
-                c.name === name && c.type === type && c.semester === semester &&
-                c.day === day && c.start === start && c.end === end
-            );
-            if (isDup) return alert("קורס זה כבר קיים במערכת באותן שעות בדיוק.");
-            
+        const isDupCheck = (n, t, sem, d, st, en) => rawCourses.some(c =>
+            c.name === n && c.type === t && c.semester === sem &&
+            c.day === d && c.start === st && c.end === en
+        );
+
+        // Extra rows are independent entries that only share the course
+        // name — add them regardless of whether we're adding or editing;
+        // they never touch the id/group being edited below.
+        let extraAddedCount = 0;
+        extraEntries.forEach(s => {
+            if (isDupCheck(name, s.type, s.semester, s.day, s.start, s.end)) return;
             rawCourses.push({
                 id: Date.now() + Math.random().toString(36).substring(2, 8),
                 courseGroupId: null,
-                name, type, semester, day, start, end, isElective: false, color
+                name, type: s.type, semester: s.semester, day: s.day, start: s.start, end: s.end,
+                isElective: s.isElective, color
             });
+            extraAddedCount++;
+            if (s.isElective) activeElectives.add(name);
+        });
+
+        if (id) {
+            const c = rawCourses.find(c => c.id === id);
+            if (c) {
+                if (isDupCheck(name, type, semester, day, start, end) && (c.name !== name || c.type !== type || c.semester !== semester || c.day !== day || c.start !== start || c.end !== end)) {
+                    return alert("קורס זה כבר קיים במערכת באותן שעות בדיוק.");
+                }
+                c.name = name; c.type = type; c.semester = semester;
+                c.day = day; c.start = start; c.end = end; c.color = color;
+            }
+        } else {
+            const useElective = document.getElementById('editElectiveToggle').checked;
+            if (isDupCheck(name, type, semester, day, start, end)) {
+                if (extraAddedCount === 0) return alert("קורס זה כבר קיים במערכת באותן שעות בדיוק.");
+            } else {
+                rawCourses.push({
+                    id: Date.now() + Math.random().toString(36).substring(2, 8),
+                    courseGroupId: null,
+                    name, type, semester, day, start, end, isElective: useElective, color
+                });
+                if (useElective) activeElectives.add(name);
+            }
         }
         document.getElementById('editDialog').close();
         updateUI(true);
+    }
+
+
+    let currentTableZoom = 1.0;
+    let initialPinchDistance = null;
+    let initialPinchZoom = 1.0;
+
+    function getFitTableZoom() {
+        const wrapper = document.querySelector('.calendar-wrapper');
+        const content = document.getElementById('calendarTableContent');
+        if (!wrapper || !content) return 1.0;
+        const availableWidth = wrapper.clientWidth - 8;
+        const isFridayVisible = !wrapper.classList.contains('hide-friday');
+        const baseWidth = isFridayVisible ? 840 : 720;
+        return Math.min(1.0, Math.max(0.25, availableWidth / baseWidth));
+    }
+
+    function setTableZoom(zoom) {
+        const content = document.getElementById('calendarTableContent');
+        if (!content) return;
+        const fitZoom = getFitTableZoom();
+        const minZoom = Math.min(0.25, fitZoom);
+        const maxZoom = 2.2;
+        currentTableZoom = Math.max(minZoom, Math.min(maxZoom, zoom));
+
+        content.style.zoom = currentTableZoom;
+        if (!('zoom' in document.documentElement.style)) {
+            content.style.transform = `scale(${currentTableZoom})`;
+            content.style.transformOrigin = 'top right';
+        }
+    }
+
+    function zoomCalendarStep(delta) {
+        setTableZoom(currentTableZoom + delta);
+    }
+
+    function fitTableToScreen() {
+        setTableZoom(getFitTableZoom());
+    }
+
+    function initTablePinchZoom() {
+        const wrapper = document.querySelector('.calendar-wrapper');
+        if (!wrapper) return;
+
+        wrapper.addEventListener('touchstart', (e) => {
+            if (!document.body.classList.contains('force-table-view')) return;
+            if (e.touches.length === 2) {
+                initialPinchDistance = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                initialPinchZoom = currentTableZoom;
+            }
+        }, { passive: true });
+
+        wrapper.addEventListener('touchmove', (e) => {
+            if (!document.body.classList.contains('force-table-view')) return;
+            if (e.touches.length === 2 && initialPinchDistance) {
+                const currentDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                if (currentDist > 0) {
+                    setTableZoom(initialPinchZoom * (currentDist / initialPinchDistance));
+                }
+            }
+        }, { passive: true });
+
+        wrapper.addEventListener('touchend', (e) => {
+            if (e.touches.length < 2) initialPinchDistance = null;
+        }, { passive: true });
+    }
+
+    function toggleFullScreen() {
+        if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(err => {
+                console.warn(`Fullscreen request failed: ${err.message}`);
+            });
+        } else {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+        }
     }
