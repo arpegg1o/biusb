@@ -571,9 +571,18 @@
         /* Class Events */
         .class-event {
             container-type: inline-size; 
-            position: absolute; width: 100%; right: 0; border: 2px solid; border-radius: 6px; 
-            padding: 26px 4px 4px 4px; 
-            font-size: 12px; overflow: hidden; box-sizing: border-box; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: all 0.3s ease; z-index: 2;
+            position: absolute; 
+            width: 100%; 
+            right: 0; 
+            border: 2px solid; 
+            border-radius: 6px; 
+            padding: 34px 4px 4px 4px; /* Gives full vertical clearance so buttons never touch the title */
+            font-size: 12px; 
+            overflow: hidden; 
+            box-sizing: border-box; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+            transition: all 0.3s ease; 
+            z-index: 2;
             color: var(--text-main);
         }
 
@@ -627,31 +636,44 @@
             left: 3px;
             display: flex;
             align-items: center;
-            gap: 3px;
-            padding: 2px 4px;
-            /* Solid high-contrast background prevents Android GPU compositor dropouts */
-            background: #ffffff;
-            border: 1px solid rgba(0, 0, 0, 0.15);
+            gap: 2px;
+            padding: 2px 3px;
+            background: rgba(255, 255, 255, 0.88);
+            border: 1px solid rgba(0, 0, 0, 0.12);
             border-radius: 6px;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
             z-index: 10;
             touch-action: manipulation;
+            transition: opacity 0.15s ease, background-color 0.15s ease;
         }
 
         html[data-theme="dark"] .box-actions {
-            background: #2a2a2a;
-            border-color: #444444;
+            background: rgba(38, 38, 38, 0.9);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+        /* Subtle presence on computer that elevates cleanly on hover */
+        @media (hover: hover) {
+            .box-actions {
+                opacity: 0.75;
+            }
+            .class-event:hover .box-actions {
+                opacity: 1;
+                background: #ffffff;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+            }
+            html[data-theme="dark"] .class-event:hover .box-actions {
+                background: #2a2a2a;
+            }
         }
 
-        /* Individual button */
+        /* Compact button dimensions for desktop grid view */
         .box-btn {
             position: relative;
             background: transparent;
             border: none;
             cursor: pointer;
-            /* Standard touch target without invisible overflow */
-            width: 26px;
-            height: 26px;
+            width: 22px;
+            height: 22px;
             padding: 0;
             margin: 0;
             color: #2c3e50;
@@ -661,30 +683,40 @@
             justify-content: center;
             touch-action: manipulation;
             -webkit-tap-highlight-color: transparent;
-            transition: background-color 0.15s ease;
+            transition: background-color 0.15s ease, transform 0.1s ease;
         }
 
         html[data-theme="dark"] .box-btn {
             color: #e0e0e0;
         }
 
-        .box-btn:active:not(:disabled) {
-            background: rgba(0, 0, 0, 0.1);
+        .box-btn:hover:not(.locked) {
+            transform: scale(1.1);
+            background: rgba(0, 0, 0, 0.06);
+        }
+
+        .box-btn:active:not(.locked) {
+            background: rgba(0, 0, 0, 0.12);
+        }
+
+        .box-btn.delete-btn:hover {
+            color: var(--danger);
         }
 
         .box-btn svg {
             display: block;
-            width: 14px;
-            height: 14px;
+            width: 12px;
+            height: 12px;
             pointer-events: none;
         }
 
-        /* Blocked / Locked button state: clearly visible, non-reactive */
+        /* Blocked / Locked state: clearly visible, non-clickable, absorbs touch */
         .box-btn.locked {
             cursor: not-allowed;
-            opacity: 0.65;
-            pointer-events: auto !important; /* Must be auto so it catches and absorbs taps */
+            opacity: 0.65 !important;
+            background: transparent !important;
             transform: none !important;
+            pointer-events: auto !important;
         }
 
         .box-btn.locked:hover,
@@ -693,12 +725,34 @@
             transform: none !important;
         }
 
-        /* In mobile stacked view, keep the button tile intact instead of hollowing it out */
+        /* Mobile stacked layout keeps large 36px touch tiles */
         @media (max-width: 900px) {
-            body:not(.force-table-view) .box-btn.locked {
-                background: var(--card) !important;
-                opacity: 0.5;
+            body:not(.force-table-view) .class-event {
+                padding: 12px 15px 15px !important;
+            }
+
+            body:not(.force-table-view) .box-actions {
+                position: static;
+                width: fit-content;
+                margin: 0 auto 8px 0;
+                padding: 4px 6px;
+                gap: 8px;
+                background: rgba(0, 0, 0, 0.05);
                 border: 1px solid var(--border);
+                opacity: 1 !important;
+            }
+
+            body:not(.force-table-view) .box-btn {
+                width: 36px;
+                height: 36px;
+                background: var(--card);
+                border: 1px solid var(--border);
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+            }
+
+            body:not(.force-table-view) .box-btn svg {
+                width: 16px;
+                height: 16px;
             }
         }
         .box-btn:hover { transform: scale(1.15); background: rgba(0,0,0,0.08); }
