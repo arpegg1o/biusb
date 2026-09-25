@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0">
     <title>מערכת שעות</title>
-    <link rel="stylesheet" href="styles.css?v=20260925-1">
+    <link rel="stylesheet" href="styles.css?v=20260925-4">
 </head>
 <body>
 
@@ -77,6 +77,10 @@
                 </div>
             </div>
 
+            <button class="btn-simple" onclick="openExamsDialog()" title="לוח מועדי בחינות">
+                <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="display:inline;vertical-align:-2px;margin-left:4px;"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+                לוח מועדים
+            </button>
             <button class="btn-simple" onclick="document.getElementById('importFile').click()">ייבא קובץ</button>
             <button class="danger" onclick="clearAll()">נקה הכל</button>
             <input type="file" id="importFile" style="display:none" accept=".json" onchange="importData(event)">
@@ -334,12 +338,82 @@
         סמן קורס זה כבחירה
     </label>
     <div id="searchAddGroups"></div>
+    <div id="searchAddExams"></div>
+    <div id="searchAddExamsEdit" style="margin-top:6px;"></div>
     <div class="dialog-buttons">
         <!-- Shown only when reached via the ✏️ edit button on an existing
              entry (openEdit() -> openSearchEditDialog()) — lets you fall
              back to the plain structured form for that one entry. -->
         <button class="btn-simple" id="searchAddManualEditBtn" style="display:none;" onclick="openManualEditFromSearch()">עריכה ידנית</button>
         <button class="btn-simple" onclick="document.getElementById('searchAddDialog').close()">סגירה</button>
+    </div>
+</dialog>
+
+<!-- ====== EXAMS SCHEDULE DIALOG ====== -->
+<dialog id="examsDialog" style="max-width:860px; width:95%; max-height:90vh; overflow:hidden; padding:0;">
+    <div class="exams-dialog-header">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <h3 style="margin:0;">לוח מועדי בחינות</h3>
+            <label class="toggle-label" style="font-size:13px; font-weight:normal;">
+                <div class="switch" style="transform:scale(0.85);">
+                    <input type="checkbox" id="examsShowUnchosenToggle" checked onchange="renderExamsDialog()">
+                    <span class="slider"></span>
+                </div>
+                הצג קורסי בחירה שלא נבחרו
+            </label>
+            <label class="toggle-label" style="font-size:13px; font-weight:normal;">
+                <div class="switch" style="transform:scale(0.85);">
+                    <input type="checkbox" id="examsShowMoedGimelToggle" onchange="renderExamsDialog()">
+                    <span class="slider"></span>
+                </div>
+                הצג מועד ג'
+            </label>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <div class="dropdown">
+                <button class="btn-simple" onclick="toggleExamsExportMenu(event)" style="font-size:13px; padding:6px 10px;">ייצא ▼</button>
+                <div class="dropdown-content" id="examsExportMenu">
+                    <button onclick="exportExamsPNG()">תמונה (PNG)</button>
+                    <button onclick="exportExamsPDF()">מסמך (PDF)</button>
+                    <button onclick="exportExamsICS()">יומן (ICS)</button>
+                    <button onclick="exportExamsJSON()">נתונים (JSON)</button>
+                </div>
+            </div>
+            <button class="btn-simple" style="font-size:13px; padding:6px 10px;" onclick="document.getElementById('examsDialog').close()">סגירה</button>
+        </div>
+    </div>
+    <div id="examsDialogBody" style="overflow-y:auto; flex:1; padding:20px;"></div>
+</dialog>
+
+<!-- ====== EXAM EDIT DIALOG ====== -->
+<dialog id="examEditDialog" style="max-width:420px;">
+    <h3 style="margin-top:0;" id="examEditTitle">ערוך בחינה</h3>
+    <input type="hidden" id="examEditCourseId">
+    <input type="hidden" id="examEditExamIndex">
+    <div class="form-group">
+        <label>שם הקורס</label>
+        <input type="text" id="examEditCourseName" readonly style="background:var(--bg-alt); color:var(--text-muted);">
+    </div>
+    <div class="form-group">
+        <label>מועד</label>
+        <select id="examEditType">
+            <option value="מועד א'">מועד א'</option>
+            <option value="מועד ב'">מועד ב'</option>
+            <option value="מועד ג'">מועד ג'</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label>תאריך (DD/MM/YYYY)</label>
+        <input type="text" id="examEditDate" placeholder="לדוגמה: 15/07/2027" maxlength="10">
+    </div>
+    <div class="form-group">
+        <label>שעה</label>
+        <input type="time" id="examEditTime" value="09:00">
+    </div>
+    <div class="dialog-buttons">
+        <button class="danger" id="examEditDeleteBtn" onclick="deleteExamEntry()">מחק מועד</button>
+        <button class="btn-simple" onclick="document.getElementById('examEditDialog').close()">ביטול</button>
+        <button class="btn-simple" onclick="saveExamEdit()" style="background:var(--primary);color:white;border:none;">שמור</button>
     </div>
 </dialog>
 
@@ -422,7 +496,7 @@
 <script src="vendor/uFuzzy.iife.min.js"></script>
 <!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
      files aggressively can keep serving an old app.js after an update. -->
-<script src="app.js?v=20260925-1"></script>
+<script src="app.js?v=20260925-4"></script>
 
 </body>
 </html>
