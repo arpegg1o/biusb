@@ -1,8 +1,263 @@
+(function() {
     let rawCourses = [];
     let historyStack = [];
     let validSchedules = [];
     let activeElectives = new Set();
     let semesterIndices = { "א'": 0, "ב'": 0, "קיץ": 0 };
+
+    // =====================================================================
+    // Exam data store
+    // courseExamsMap: Map<courseName, {
+    //   exams:            [{type, date, time}],   // legacy flat list (kept for manual edits & back-compat)
+    //   examsBySemester:  { a?: [...], b?: [...], summer?: [...] },  // per-semester exam dates
+    //   shoamId:          string | null,           // legacy single shoam id
+    //   shoamIdBySemester:{ a?: string, b?: string, summer?: string }, // per-semester shoam ids
+    //   courseCode?:      string
+    // }>
+    // examsBySemester / shoamIdBySemester are populated from catalog course data.
+    // getAllExamEntries() uses them (when present) so a user enrolled only in
+    // semester א' never sees semester ב' exam dates for the same course.
+    // Manual edits always go into the flat `exams` list, which acts as an
+    // override for any semester bucket that is otherwise empty.
+    // Persisted to localStorage independently of rawCourses so it survives
+    // semester switches and clear-all.
+    // =====================================================================
+    const COURSE_EXAMS_STORAGE_KEY = 'courseExamsData';
+    let courseExamsMap = new Map(); // courseName → { exams, examsBySemester, shoamId, shoamIdBySemester, courseCode }
+
+    function loadCourseExamsFromStorage() {
+        try {
+            const raw = localStorage.getItem(COURSE_EXAMS_STORAGE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') {
+                Object.entries(parsed).forEach(([name, data]) => {
+                    courseExamsMap.set(name, data);
+                });
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function saveCourseExamsToStorage() {
+        try {
+            const obj = {};
+            courseExamsMap.forEach((data, name) => { obj[name] = data; });
+            localStorage.setItem(COURSE_EXAMS_STORAGE_KEY, JSON.stringify(obj));
+        } catch (e) { /* ignore */ }
+    }
+
+    // =====================================================================
+    // Semester date-range classification for exam splitting
+    //
+    // The catalog's flat `course.exams` array mixes exam dates from every
+    // semester a course runs in (e.g. semester א' מועד א' on 18/01 AND
+    // semester ב' מועד א' on 27/06 both appear in the same array).
+    // We split them by month using Israeli academic-year conventions:
+    //
+    //   semester א'  (key 'a')     : Oct–Feb  → months 10,11,12,1,2
+    //   semester ב'  (key 'b')     : Mar–Jul  → months 3,4,5,6,7
+    //   summer       (key 'summer'): Aug–Sep  → months 8,9
+    //
+    // An exam that falls outside these ranges (shouldn't happen in practice)
+    // stays in the flat `exams` list only, so it is never silently dropped.
+    // =====================================================================
+    const EXAM_MONTH_TO_SEMESTER = (function() {
+        const map = {};
+        [10, 11, 12, 1, 2].forEach(m => { map[m] = 'a'; });
+        [3, 4, 5, 6, 7].forEach(m => { map[m] = 'b'; });
+        [8, 9].forEach(m => { map[m] = 'summer'; });
+        return map;
+    })();
+
+    /** Split a flat exam array into { a: [...], b: [...], summer: [...] }
+     *  by pairing exam occurrences to semesters in chronological order.
+     *
+     *  Month-based bucketing is unreliable: semester A's moed-bet retake
+     *  often falls in March, which EXAM_MONTH_TO_SEMESTER maps to 'b'.
+     *  Instead we group exams by their type label, sort each group by date,
+     *  and assign the kth occurrence to the kth semester in SEMESTER_LIST_ORDER
+     *  that appears in semestersForCourse.  The earliest moed-aleph belongs
+     *  to the first semester, the next to the second, and so on.
+     *
+     *  semestersForCourse may be a Set or an Array; order is derived from
+     *  SEMESTER_LIST_ORDER so the result is always stable. */
+    function splitExamsBySemester(exams, semestersForCourse) {
+        // Ordered list of semesters this course actually runs in.
+        const semKeys = SEMESTER_LIST_ORDER.filter(s =>
+            semestersForCourse instanceof Set
+                ? semestersForCourse.has(s)
+                : semestersForCourse.includes(s)
+        ).filter(s => s !== 'annual');
+        if (semKeys.length === 0) return {};
+
+        const result = {};
+        if (semKeys.length === 1) {
+            // Single-semester: all exams go there.
+            result[semKeys[0]] = exams.slice();
+            return result;
+        }
+
+        // Group by type, sort each group by date, assign kth to semKeys[k].
+        const byType = {};
+        exams.forEach(exam => {
+            const t = (exam.type || '').trim();
+            (byType[t] = byType[t] || []).push(exam);
+        });
+        Object.values(byType).forEach(group => {
+            group.sort((a, b) => {
+                const da = examToDate(a), db = examToDate(b);
+                if (da && db) return da - db;
+                if (da) return -1; if (db) return 1;
+                return 0;
+            });
+            group.forEach((exam, i) => {
+                const key = semKeys[Math.min(i, semKeys.length - 1)];
+                (result[key] = result[key] || []).push(exam);
+            });
+        });
+        return result;
+    }
+
+    /** Derive per-semester shoam ids from the groups array.
+     *  The new catalog format puts a `shoamId` on each group.
+     *  We take the first (non-null) shoamId found for any group in each semester.
+     *  Falls back to the top-level `course.shoamId` spread across all semesters
+     *  when no group has its own shoamId (old format). */
+    function deriveShoamIdBySemester(course, semestersForCourse) {
+        const result = {};
+        const courseGroups = Array.isArray(course.groups) ? course.groups : [];
+
+        // New format: per-group shoamId
+        const groupsWithShoam = courseGroups.filter(g => g.shoamId);
+        if (groupsWithShoam.length > 0) {
+            groupsWithShoam.forEach(g => {
+                const sem = g.semester === 'annual' ? null : g.semester;
+                if (sem && semestersForCourse.has(sem) && !result[sem]) {
+                    result[sem] = g.shoamId;
+                }
+            });
+            // For annual groups with a shoamId, apply to both a and b
+            courseGroups.filter(g => g.semester === 'annual' && g.shoamId).forEach(g => {
+                ['a', 'b'].forEach(sem => {
+                    if (semestersForCourse.has(sem) && !result[sem]) {
+                        result[sem] = g.shoamId;
+                    }
+                });
+            });
+        } else if (course.shoamId) {
+            // Old format: single top-level shoamId — spread to all semesters
+            semestersForCourse.forEach(sem => { result[sem] = course.shoamId; });
+        }
+        return result;
+    }
+
+    /** Register exam data from a fetched course object (called after any course detail load).
+     *
+     * Handles both the old format (flat exams, single top-level shoamId) and the
+     * new format (flat exams mixing multiple semesters, per-group shoamId):
+     *   - examsBySemester  is built by splitting the flat exam array on month ranges
+     *   - shoamIdBySemester is derived from per-group shoamId fields (new format)
+     *     or by spreading the single course.shoamId (old format)
+     *
+     * Stale-seed detection fires when any of these conditions hold for an existing entry:
+     *   (a) exams list is empty and new data has exams → old version had no exam times
+     *   (b) examsBySemester is missing → entry predates per-semester support
+     *   (c) shoamIdBySemester is missing but the course now has shoam data → same
+     * In those cases the catalog data is merged in without touching any manual edits
+     * the user may have made to the flat exams list. */
+    function registerCourseExams(course) {
+        if (!course || !course.nameHe) return;
+        const existing = courseExamsMap.get(course.nameHe);
+        const fetchedExams = Array.isArray(course.exams) ? course.exams : [];
+
+        // Derive which semesters this course runs in from its groups array
+        const courseGroups = Array.isArray(course.groups) ? course.groups : [];
+        const semestersForCourse = new Set(
+            courseGroups
+                .map(g => g.semester)
+                .filter(s => s && s !== 'annual')
+        );
+        if (courseGroups.some(g => g.semester === 'annual')) {
+            semestersForCourse.add('a');
+            semestersForCourse.add('b');
+        }
+
+        // Split the flat exams array into per-semester buckets by exam date
+        const examsBySemester = splitExamsBySemester(fetchedExams, semestersForCourse);
+
+        // Derive per-semester shoam ids (new: per-group; old: single top-level)
+        const shoamIdBySemester = deriveShoamIdBySemester(course, semestersForCourse);
+
+        // Stale-seed conditions
+        const isStaleEmptySeed = existing && existing.exams && existing.exams.length === 0 && fetchedExams.length > 0;
+        // Catalog has exams the stored entry doesn't — update catalog-sourced exams.
+        // We detect this by checking if any catalog exam date isn't in stored.exams.
+        // Manual edits (dates not in catalog) are preserved by merging: keep everything
+        // in stored.exams that isn't a catalog exam, plus all catalog exams.
+        const catalogDates = new Set(fetchedExams.map(e => e.date + '|' + e.type));
+        const storedDates  = existing ? new Set((existing.exams || []).map(e => e.date + '|' + e.type)) : new Set();
+        const catalogHasNewExams = fetchedExams.some(e => !storedDates.has(e.date + '|' + e.type));
+
+        const isMissingPerSemesterExams = existing && !existing.examsBySemester;
+        const hasShoamData = course.shoamId || courseGroups.some(g => g.shoamId);
+        const isMissingPerSemesterShoam = existing && !existing.shoamIdBySemester && hasShoamData;
+
+        if (!existing || isStaleEmptySeed) {
+            // Nothing stored yet (or stale empty seed) — seed from the catalog fetch
+            courseExamsMap.set(course.nameHe, {
+                exams: fetchedExams,
+                examsBySemester,
+                courseCode: course.courseCode || null,
+                shoamId: course.shoamId || null,
+                shoamIdBySemester,
+            });
+            saveCourseExamsToStorage();
+        } else {
+            // Entry already exists — merge catalog data in, preserving manual edits.
+            let changed = false;
+            if (!existing.courseCode && course.courseCode) {
+                existing.courseCode = course.courseCode;
+                changed = true;
+            }
+            if (!existing.shoamId && course.shoamId) {
+                existing.shoamId = course.shoamId;
+                changed = true;
+            }
+            // If the catalog now has exam entries not present in stored.exams
+            // (e.g. new JSON format added semester-b exam dates), merge them in.
+            // Manual edits (exams whose date+type aren't in the catalog) are kept.
+            if (catalogHasNewExams && fetchedExams.length > 0) {
+                const manualEdits = (existing.exams || []).filter(e => !catalogDates.has(e.date + '|' + e.type));
+                const merged = [...fetchedExams, ...manualEdits];
+                merged.sort((a, b) => {
+                    const da = examToDate(a), db = examToDate(b);
+                    return (da && db) ? da - db : 0;
+                });
+                existing.exams = merged;
+                existing.examsBySemester = splitExamsBySemester(merged, semestersForCourse);
+                changed = true;
+            } else if (isMissingPerSemesterExams) {
+                // Back-fill examsBySemester by re-splitting the stored flat exams list.
+                existing.examsBySemester = splitExamsBySemester(existing.exams || [], semestersForCourse);
+                changed = true;
+            }
+            // Always overwrite shoamIdBySemester from the freshly-derived catalog data —
+            // it is never manually edited, so there is nothing to preserve.
+            // Guarding behind a key-count comparison caused stale stored maps (e.g.
+            // both semesters pointing to the top-level shoamId from an older fetch)
+            // to survive even after the catalog started providing correct per-group ids.
+            if (Object.keys(shoamIdBySemester).length > 0) {
+                existing.shoamIdBySemester = shoamIdBySemester;
+                changed = true;
+            } else if (!existing.shoamIdBySemester && course.shoamId) {
+                // Fallback for courses with only a top-level shoamId and no per-group ids.
+                existing.shoamIdBySemester = {};
+                semestersForCourse.forEach(sem => { existing.shoamIdBySemester[sem] = course.shoamId; });
+                changed = true;
+            }
+            if (changed) saveCourseExamsToStorage();
+        }
+    }
     let activeAlternativeKey = null; 
     let scheduleWorker = null; 
     let lastConflictDetails = null; 
@@ -117,6 +372,9 @@
             courseDetailCache.set(id, fetch(`data/courses/${id}.json`).then((r) => {
                 if (!r.ok) throw new Error(`Failed to load course ${id}: ${r.status}`);
                 return r.json();
+            }).then((course) => {
+                registerCourseExams(course);
+                return course;
             }));
         }
         return courseDetailCache.get(id);
@@ -405,7 +663,8 @@
     function renderSearchAddDialog(course) {
         currentSearchAddCourse = course;
         document.getElementById('searchAddTitle').innerText = course.nameHe;
-        document.getElementById('searchAddMeta').innerText = `${course.courseCode} · ${course.credits} נ"ז`;
+        const creditsDisplay = Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1));
+        document.getElementById('searchAddMeta').innerHTML = `${course.courseCode} · ${creditsDisplay} נ"ז`;
         document.getElementById('searchAddManualEditBtn').style.display = manualEditFallbackId ? 'inline-block' : 'none';
 
         // Reflect this course's ACTUAL current elective state (electives are
@@ -419,6 +678,14 @@
         const container = document.getElementById('searchAddGroups');
         container.innerHTML = renderGroupsBySemester(course)
             || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות זמינות לקורס זה.</p>';
+
+        // searchAddExams (read-only) is intentionally left empty here;
+        // renderExamsEditSection below shows the same data with edit controls,
+        // so there's no need for a separate read-only heading that would
+        // duplicate the שוהם link and the exam rows.
+        // renderExamsEditSection resolves per-semester exam / shoam data internally.
+        document.getElementById('searchAddExams').innerHTML = '';
+        renderExamsEditSection(course);
     }
 
     // Real semester keys first (SEMESTER_MAP order), "annual" last since it
@@ -437,6 +704,23 @@
         for (const g of getMergedGroups(course)) {
             if (g.type === 'other') continue; // never offered, matches CourseDetailPanel
             (bySemester[g.semester] = bySemester[g.semester] || []).push(g);
+        }
+
+        // Derive shoam ids per-semester directly from course.groups — the course
+        // object is always freshly fetched, so this is always correct regardless of
+        // what localStorage may have cached from a previous session.
+        // Stored shoamIdBySemester is intentionally NOT used here: it can be stale
+        // (e.g. both semesters pointing to the top-level id before per-group ids were
+        // introduced) and would override correct per-group data.
+        const shoamIdBySem = {};
+        (course.groups || []).forEach(g => {
+            if (!g.shoamId) return;
+            const sems = g.semester === 'annual' ? ['a', 'b'] : [g.semester];
+            sems.forEach(s => { if (s && !shoamIdBySem[s]) shoamIdBySem[s] = g.shoamId; });
+        });
+        // Fallback for courses that only carry a single top-level shoamId (old format).
+        if (Object.keys(shoamIdBySem).length === 0 && course.shoamId) {
+            Object.keys(bySemester).forEach(s => { shoamIdBySem[s] = course.shoamId; });
         }
 
         return SEMESTER_LIST_ORDER.filter((sem) => bySemester[sem] && bySemester[sem].length).map((sem) => {
@@ -491,15 +775,1015 @@
                         onclick="addAllGroupsForCourseInSemester('${sem}')"
                         title="הוסף את כל הקבוצות של הקורס בסמסטר ${SEMESTER_MAP[sem] || sem}">הוסף הכל</button>`;
 
+            // Per-semester שוהם link — shown only when the catalog provides one
+            // for this exact semester (never falls back to a different semester's id).
+            const semShoamId = shoamIdBySem[sem] || null;
+            const semShoamLink = semShoamId
+                ? `<a href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${semShoamId}" target="_blank" rel="noopener"
+                      style="font-size:12px; color:var(--primary); text-decoration:none; margin-right:8px;" title="פתח בשוהם">שוהם ↗</a>`
+                : '';
+
             return `
                 <div class="semester-section">
                     <div class="semester-section-header">
-                        <h3>${SEMESTER_MAP[sem] || sem}</h3>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <h3>${SEMESTER_MAP[sem] || sem}</h3>
+                            ${semShoamLink}
+                        </div>
                         ${addAllBtnHtml}
                     </div>
                     ${typeSections}
                 </div>`;
         }).join('');
+    }
+
+    /** Renders the exam dates (read-only) for a course detail dialog. */
+    function renderExams(course) {
+        if (!course.exams || course.exams.length === 0) return '';
+        const rows = course.exams.map((exam) => `
+            <div class="exam-row">
+                <span class="exam-type">${exam.type}</span>
+                <span class="exam-datetime" dir="ltr">${exam.date}${exam.time ? ' · ' + exam.time : ''}</span>
+            </div>`).join('');
+        return `
+            <div class="exam-section">
+                <h4>מועדי בחינות</h4>
+                ${rows}
+            </div>`;
+    }
+
+    /** Renders the editable exam section in the searchAddDialog.
+     *  Shows all semesters' exams grouped by semester, matching the groups
+     *  layout above — the list dialog already shows every semester at once,
+     *  so filtering to only the currently-selected semester would hide exams
+     *  the user can see groups for. */
+    function renderExamsEditSection(course) {
+        const el = document.getElementById('searchAddExamsEdit');
+        if (!el) return;
+        const stored = courseExamsMap.get(course.nameHe);
+        const courseId = course.id;
+
+        // Use course.exams (freshly fetched, full cross-semester list) as the
+        // authoritative base.  Merge in any manual edits the user made in
+        // stored.exams that don't appear in the catalog list — those are kept
+        // so manual additions survive a re-open.  Stored.exams alone can be a
+        // stale partial list (e.g. seeded from only one semester's view) so we
+        // never use it as the sole source.
+        const catalogExams = Array.isArray(course.exams) ? course.exams : [];
+        const catalogKeys  = new Set(catalogExams.map(e => e.date + '|' + e.type));
+        const manualEdits  = stored ? (stored.exams || []).filter(e => !catalogKeys.has(e.date + '|' + e.type)) : [];
+        const flatExams    = [...catalogExams, ...manualEdits];
+
+        // Determine which semesters this course is offered in (from groups),
+        // so we can bucket exams the same way the groups are bucketed above.
+        const semestersInCourse = [];
+        SEMESTER_LIST_ORDER.forEach(sem => {
+            const hasGroups = (course.groups || []).some(g =>
+                sem === 'annual' ? g.semester === 'annual' :
+                g.semester === sem || (sem !== 'annual' && g.semester === 'annual' && (sem === 'a' || sem === 'b'))
+            );
+            if (hasGroups && !semestersInCourse.includes(sem)) semestersInCourse.push(sem);
+        });
+        // Deduplicate: annual expands to a+b above, don't also show 'annual' bucket
+        const semKeys = semestersInCourse.filter(s => s !== 'annual');
+        if (semKeys.length === 0) semKeys.push(...SEMESTER_LIST_ORDER.slice(0, 3)); // fallback
+
+        // Build per-semester exam buckets.
+        //
+        // Month-based bucketing (EXAM_MONTH_TO_SEMESTER) is unreliable here:
+        // semester A's moed-bet retake often falls in March, which the month
+        // map puts in 'b'. Instead, group exams by their moed type, sort each
+        // type's occurrences chronologically, and assign the kth occurrence to
+        // semKeys[k]. The earliest moed-aleph belongs to the first semester,
+        // the next to the second, etc. Exams whose rank exceeds the number of
+        // known semesters fall back to the last semKey so nothing is lost.
+        const examsBySem = {};
+        if (semKeys.length <= 1) {
+            // Single-semester course: all exams belong to that one semester.
+            flatExams.forEach(exam => {
+                const key = semKeys[0];
+                if (key) (examsBySem[key] = examsBySem[key] || []).push(exam);
+            });
+        } else {
+            // Group by normalised moed type, sort each group by date, then
+            // assign to semesters by rank.
+            const byType = {};
+            flatExams.forEach(exam => {
+                const t = (exam.type || '').trim();
+                (byType[t] = byType[t] || []).push(exam);
+            });
+            Object.values(byType).forEach(group => {
+                group.sort((a, b) => {
+                    const da = examToDate(a), db = examToDate(b);
+                    if (da && db) return da - db;
+                    if (da) return -1; if (db) return 1;
+                    return 0;
+                });
+                group.forEach((exam, i) => {
+                    // kth exam of this type -> semKeys[k], clamped to last key.
+                    const key = semKeys[Math.min(i, semKeys.length - 1)];
+                    (examsBySem[key] = examsBySem[key] || []).push(exam);
+                });
+            });
+        }
+
+        // Helper: render one exam row
+        const renderExamRow = (exam) => {
+            let flatIdx = flatExams.indexOf(exam);
+            if (flatIdx === -1) flatIdx = flatExams.findIndex(e =>
+                e.date === exam.date && e.type === exam.type && e.time === exam.time);
+            const editIdx = flatIdx >= 0 ? flatIdx : 0;
+            const moedClass = getMoedClass(exam.type);
+            return `<div class="exam-row" style="cursor:default;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="moed-badge ${moedClass}">${exam.type}</span>
+                    <span dir="ltr" style="font-size:13px;">${exam.date}${exam.time ? ' ' + exam.time : ''}</span>
+                </div>
+                <button class="icon-btn" style="font-size:13px; padding:3px 6px;"
+                    onclick="openEditExam('${courseId}', '${course.nameHe.replace(/'/g,"\\'")}', ${editIdx})"
+                    title="ערוך">✏️</button>
+            </div>`;
+        };
+
+        const totalExams = Object.values(examsBySem).reduce((n, arr) => n + arr.length, 0);
+        const showSemesterHeaders = semKeys.length > 1;
+
+        let html = `<div class="exam-section exam-section-edit">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                <h4 style="margin:0;">ערוך מועדי בחינות</h4>
+                <button class="btn-simple" style="font-size:12px; padding:4px 8px;"
+                    onclick="openAddExam('${courseId}', '${course.nameHe.replace(/'/g,"\\'")}')">+ הוסף מועד</button>
+            </div>`;
+
+        // Sort each bucket chronologically so exams always appear in date order
+        // regardless of the order they appear in the flat catalog array.
+        const sortByDate = arr => arr.slice().sort((a, b) => {
+            const da = examToDate(a), db = examToDate(b);
+            if (da && db) return da - db;
+            if (da) return -1; if (db) return 1;
+            return 0;
+        });
+
+        if (totalExams === 0) {
+            html += `<p style="font-size:12px; color:var(--text-muted); margin:0;">אין מועדי בחינות רשומים.</p>`;
+        } else if (showSemesterHeaders) {
+            semKeys.forEach(sem => {
+                const semExams = examsBySem[sem] || [];
+                if (semExams.length === 0) return;
+                html += `<div style="font-size:12px; font-weight:bold; color:var(--text-muted); margin:8px 0 4px;">${SEMESTER_MAP[sem] || sem}</div>`;
+                sortByDate(semExams).forEach(exam => { html += renderExamRow(exam); });
+            });
+        } else {
+            sortByDate(examsBySem[semKeys[0]] || []).forEach(exam => { html += renderExamRow(exam); });
+        }
+
+        html += `</div>`;
+        el.innerHTML = html;
+    }
+
+    // =====================================================================
+    // Exam Schedule Dialog — the main exams calendar feature
+    // =====================================================================
+
+    function getMoedClass(type) {
+        if (!type) return 'moed-a';
+        if (type.includes("א'") || type.includes('A') || type.includes('1')) return 'moed-a';
+        if (type.includes("ב'") || type.includes('B') || type.includes('2')) return 'moed-b';
+        if (type.includes("ג'") || type.includes('C') || type.includes('3')) return 'moed-c';
+        return 'moed-other';
+    }
+
+    /** Parse "DD/MM/YYYY" → {year, month (0-based), day} or null. */
+    function parseExamDate(dateStr) {
+        if (!dateStr) return null;
+        const parts = dateStr.split('/');
+        if (parts.length !== 3) return null;
+        const day = parseInt(parts[0], 10), month = parseInt(parts[1], 10) - 1, year = parseInt(parts[2], 10);
+        if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
+        return { year, month, day };
+    }
+
+    /** Returns Date object from exam or null. */
+    function examToDate(exam) {
+        const p = parseExamDate(exam.date);
+        if (!p) return null;
+        return new Date(p.year, p.month, p.day);
+    }
+
+    /** All course names that appear in rawCourses for the given semester
+     *  (including שנתי courses which span all semesters). */
+    function getCourseNamesForSemester(semester) {
+        return new Set(
+            rawCourses
+                .filter(c => c.semester === semester || c.semester === 'שנתי')
+                .map(c => c.name)
+        );
+    }
+
+    /** Build the flat exam entry list for the given semester (Hebrew label, e.g. "א'").
+     *  - Only courses that belong to that semester are included.
+     *  - When the stored entry has examsBySemester, only the bucket for the
+     *    *exact* semester the user is enrolled in is used — so a user registered
+     *    only in semester א' never sees semester ב' exam dates for the same course.
+     *    Falls back to the legacy flat `exams` array when no per-semester bucket
+     *    exists (backward-compat) or when the user has manual edits there.
+     *  - shoamId is similarly resolved per-semester when shoamIdBySemester is present.
+     *  - `enrolled` = true when the course is required (not elective) OR is an
+     *    elective that is currently active in the sidebar (activeElectives).
+     *    An elective that is NOT active is "unchosen" and rendered dimmed.
+     *  Each entry: { courseName, courseCode, shoamId, exam, enrolled, bg, border, text } */
+    function getAllExamEntries(semester) {
+        const semCourseNames = getCourseNamesForSemester(semester);
+        // Map the display semester label (e.g. "א'") back to the catalog key ('a'/'b'/'summer')
+        const semesterKey = semesterKeyFromSelect(semester); // null for שנתי — not a display semester
+        const entries = [];
+
+        courseExamsMap.forEach((data, courseName) => {
+            if (!semCourseNames.has(courseName)) return; // not enrolled in this semester
+
+            // --- Resolve which exams to show for this semester ---
+            // Re-split using the same type-pairing algorithm as renderExamsEditSection
+            // so that semester A's moed-bet (often in March) is never mis-assigned
+            // to semester B by a month-range check.
+            // We derive which semesters the course runs in from the shoamIdBySemester
+            // keys (always up-to-date after registerCourseExams) with a fallback to
+            // examsBySemester keys and finally to all known semesters.
+            const flatAll = data.exams || [];
+            let examsForSem;
+            if (semesterKey && flatAll.length > 0) {
+                const knownSems = new Set(
+                    Object.keys(data.shoamIdBySemester || {})
+                        .concat(Object.keys(data.examsBySemester || {}))
+                );
+                if (knownSems.size === 0) knownSems.add('a').add('b');
+                const split = splitExamsBySemester(flatAll, knownSems);
+                examsForSem = split[semesterKey] || [];
+                // If nothing came back (e.g. single-semester course stored under a
+                // different key), fall back to the full flat list so nothing is lost.
+                if (examsForSem.length === 0) examsForSem = flatAll;
+            } else {
+                examsForSem = flatAll;
+            }
+            if (!examsForSem || examsForSem.length === 0) return;
+
+            // --- Resolve which shoam link to show for this semester ---
+            let shoamId;
+            if (semesterKey && data.shoamIdBySemester && data.shoamIdBySemester[semesterKey]) {
+                shoamId = data.shoamIdBySemester[semesterKey];
+            } else {
+                shoamId = data.shoamId || null;
+            }
+
+            // Determine whether this course is "chosen" for display purposes:
+            // - required courses (isElective === false) are always chosen
+            // - elective courses are chosen only when they are in activeElectives
+            const courseEntries = rawCourses.filter(
+                c => c.name === courseName && (c.semester === semester || c.semester === 'שנתי')
+            );
+            const isElective = courseEntries.length > 0 && courseEntries.every(c => c.isElective);
+            const isEnrolled = !isElective || activeElectives.has(courseName);
+
+            const colors = getCourseStyle(courseName, 'הרצאה', null);
+            examsForSem.forEach(exam => {
+                entries.push({
+                    courseName,
+                    courseCode: data.courseCode || '',
+                    shoamId,
+                    exam,
+                    enrolled: isEnrolled,
+                    bg: colors.bg,
+                    border: colors.border,
+                    text: colors.text,
+                });
+            });
+        });
+
+        // Sort by date, then courseName
+        entries.sort((a, b) => {
+            const da = examToDate(a.exam), db = examToDate(b.exam);
+            if (da && db) return da - db;
+            if (da) return -1; if (db) return 1;
+            return a.courseName.localeCompare(b.courseName);
+        });
+        return entries;
+    }
+
+    /** Group entries by year-month and fill in every empty month between the
+     *  first and last exam so the calendar is a continuous range, not a
+     *  sparse list. Returns [{year, month, entries:[]}]. */
+    function groupEntriesByMonth(entries) {
+        // First bucket entries into their months
+        const byKey = new Map();
+        entries.forEach(e => {
+            const p = parseExamDate(e.exam.date);
+            if (!p) return; // skip undated entries
+            const key = `${p.year}-${p.month}`;
+            if (!byKey.has(key)) byKey.set(key, { year: p.year, month: p.month, entries: [] });
+            byKey.get(key).entries.push(e);
+        });
+
+        if (byKey.size === 0) return [];
+
+        // Find the range
+        const sorted = Array.from(byKey.values()).sort(
+            (a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month
+        );
+        const first = sorted[0], last = sorted[sorted.length - 1];
+
+        // Fill every month from first to last (empty months get entries: [])
+        const result = [];
+        let y = first.year, m = first.month;
+        while (y < last.year || (y === last.year && m <= last.month)) {
+            const key = `${y}-${m}`;
+            result.push(byKey.get(key) || { year: y, month: m, entries: [] });
+            m++;
+            if (m > 11) { m = 0; y++; }
+        }
+        return result;
+    }
+
+    const HE_MONTHS = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+    const HE_DAYS_SHORT = ['א׳','ב׳','ג׳','ד׳','ה׳','ו׳','ש׳'];
+
+    /** Detect date-overlaps within the enrolled entries list. Returns Set of dateStr. */
+    function getOverlapDates(entries) {
+        const enrolledByDate = {};
+        entries.filter(e => e.enrolled).forEach(e => {
+            const d = e.exam.date;
+            if (!enrolledByDate[d]) enrolledByDate[d] = [];
+            enrolledByDate[d].push(e.courseName);
+        });
+        const overlapDates = new Set();
+        Object.entries(enrolledByDate).forEach(([d, names]) => {
+            if (names.length > 1) overlapDates.add(d);
+        });
+        return overlapDates;
+    }
+
+    function openExamsDialog() {
+        renderExamsDialog();
+        document.getElementById('examsDialog').showModal();
+        // For any enrolled catalog course that isn't in courseExamsMap yet
+        // (e.g. courses added before the exam feature was introduced),
+        // kick off a background fetch so their exam data appears on next open.
+        _seedMissingCourseExams();
+    }
+
+    // Tracks which course IDs have already been re-fetched this page session so we
+    // don't hammer the server on every examsDialog open, but DO fetch once per load
+    // so new catalog data (extra exam dates, fresh shoamIds) is always picked up.
+    const _seededThisSession = new Set();
+
+    /** Background-fetch exam data for enrolled catalog courses across ALL
+     *  semesters that either have no entry in courseExamsMap yet, or whose
+     *  stored entry may be stale (missing fields or fewer exams than catalog).
+     *  Each course is fetched at most once per page session — the session-level
+     *  Set prevents redundant round-trips on repeated dialog opens while still
+     *  ensuring the very first open after a catalog update picks up new data.
+     *  Called both on page load (1.5 s delay so the catalog index settles first)
+     *  and again when the exams dialog opens.
+     *  Silently ignores errors and re-renders the open dialog when fetches return. */
+    function _seedMissingCourseExams() {
+        const seen = new Set();
+        rawCourses.forEach(c => {
+            const courseId = extractCourseIdFromGroupId(c.courseGroupId);
+            if (!courseId || seen.has(courseId)) return;
+            seen.add(courseId);
+
+            // Always fetch once per session so new catalog data is picked up.
+            // fetchCourseDetail() is cached — repeated calls for the same id are free.
+            if (_seededThisSession.has(courseId)) return;
+            _seededThisSession.add(courseId);
+
+            fetchCourseDetail(courseId).then(course => {
+                if (document.getElementById('examsDialog').open) {
+                    renderExamsDialog();
+                }
+                // Also re-render the course detail dialog if it's open for this course
+                if (document.getElementById('searchAddDialog').open && currentSearchAddCourse && currentSearchAddCourse.nameHe === course.nameHe) {
+                    renderSearchAddDialog(currentSearchAddCourse);
+                }
+            }).catch(() => { /* silently ignore network errors */ });
+        });
+    }
+
+    // =====================================================================
+    // Legacy-course linking
+    //
+    // Courses that were added via paste/manual-entry before the search flow
+    // existed (or imported from an old JSON export) have no catalog-style
+    // courseGroupId, so they don't get the "+" button or exam data.
+    //
+    // This function runs once per page load (after the catalog index has
+    // settled).  For every group of rawCourses entries that share a name and
+    // have no valid catalog courseGroupId, it searches the catalog for a
+    // course with the same name (exact match).  If found, it fetches the
+    // course detail and checks whether ALL the existing sessions (identified
+    // by type + day + start + end) are present inside any of that catalog
+    // course's groups.  When they are, it rewrites the courseGroupId of those
+    // entries to the matching catalog group's id — giving them the "+" button,
+    // elective management, and (via registerCourseExams / _seedMissingCourseExams)
+    // exam data on the next pass.
+    //
+    // The check is intentionally strict: ALL sessions of a manually-entered
+    // group must be found in the catalog group.  Partial matches are ignored
+    // so we never silently rewrite an entry that the user customised by hand.
+    // =====================================================================
+    // Tracks which course names were successfully linked this session
+    // (not used to skip failed attempts — those always retry).
+    const _linkedThisSession = new Set();
+
+    function _linkLegacyCourses() {
+        if (!catalogIndex || catalogIndex.length === 0) {
+            console.debug('[linkLegacy] catalog not ready yet, skipping');
+            return;
+        }
+
+        // Collect names that need linking (no valid catalog courseGroupId).
+        const namesToLink = new Set(
+            rawCourses
+                .filter(c => !extractCourseIdFromGroupId(c.courseGroupId))
+                .map(c => c.name)
+        );
+        if (namesToLink.size === 0) {
+            console.debug('[linkLegacy] nothing to link');
+            return;
+        }
+
+        console.debug('[linkLegacy] names to link:', [...namesToLink]);
+
+        // Build TWO lookups for maximum coverage:
+        //   1. normalised-name → catalog entries (exact fuzzy-normalised match)
+        //   2. exact Hebrew name → catalog entries (direct nameHe match)
+        // Each maps to an ARRAY, not a single entry: the same Hebrew course
+        // name can legitimately appear more than once in the catalog (cross-
+        // listed courses, the same course offered under a different course
+        // code by another department/track, etc). Keeping only the first hit
+        // meant that whenever THAT entry happened to be the wrong one, linking
+        // silently failed for every option even though a correct match existed
+        // elsewhere in the catalog under the same name.
+        const catalogByNormName = new Map();
+        const catalogByExactName = new Map();
+        catalogIndex.forEach(entry => {
+            const norm = normalizeForFuzzyMatch(entry.nameHe);
+            if (!catalogByNormName.has(norm)) catalogByNormName.set(norm, []);
+            catalogByNormName.get(norm).push(entry);
+            if (!catalogByExactName.has(entry.nameHe)) catalogByExactName.set(entry.nameHe, []);
+            catalogByExactName.get(entry.nameHe).push(entry);
+        });
+
+        namesToLink.forEach(courseName => {
+            // Only skip names that were SUCCESSFULLY linked — don't skip failed attempts.
+            if (_linkedThisSession.has(courseName)) return;
+
+            // Try exact-name candidates first, then normalised-match candidates,
+            // de-duplicated by id (an entry can satisfy both lookups).
+            const norm = normalizeForFuzzyMatch(courseName);
+            const seenIds = new Set();
+            const candidates = [
+                ...(catalogByExactName.get(courseName) || []),
+                ...(catalogByNormName.get(norm) || []),
+            ].filter(entry => {
+                if (seenIds.has(entry.id)) return false;
+                seenIds.add(entry.id);
+                return true;
+            });
+
+            if (candidates.length === 0) {
+                console.debug('[linkLegacy] no catalog match for:', courseName, '(norm:', norm + ')');
+                return; // not in catalog — leave as-is
+            }
+
+            console.debug('[linkLegacy] found', candidates.length, 'catalog candidate(s) for:', courseName,
+                '→', candidates.map(c => c.id));
+
+            // For each distinct "option group" of the manually-entered course
+            // (entries that share the same courseGroupId, or the same id when
+            // courseGroupId is null), try to find a matching catalog group.
+            const optionKeys = new Set(
+                rawCourses
+                    .filter(c => c.name === courseName && !extractCourseIdFromGroupId(c.courseGroupId))
+                    .map(c => c.courseGroupId || c.id)
+            );
+            if (optionKeys.size === 0) return;
+
+            console.debug('[linkLegacy]', courseName, '— option groups to try:', optionKeys.size);
+
+            // Try each candidate catalog entry in turn, stopping at the first
+            // one that actually matches at least one option. Only after every
+            // candidate has failed do we give up on this course name.
+            function tryCandidate(i) {
+                if (i >= candidates.length) {
+                    console.debug('[linkLegacy] failed to link any groups for', courseName,
+                        '— tried', candidates.length, 'catalog candidate(s)');
+                    return;
+                }
+                const catalogEntry = candidates[i];
+
+                fetchCourseDetail(catalogEntry.id).then(course => {
+                    let anyLinked = false;
+
+                    optionKeys.forEach(optKey => {
+                        const sessions = rawCourses.filter(
+                            c => c.name === courseName && (c.courseGroupId || c.id) === optKey
+                        );
+                        if (sessions.length === 0) return;
+
+                        // Build a set of "type|day|start|end" signatures for this option.
+                        const sessionSigs = new Set(
+                            sessions.map(s => `${TYPE_MAP_REVERSE[s.type] || s.type}|${s.day}|${s.start}|${s.end}`)
+                        );
+
+                        console.debug('[linkLegacy] candidate', catalogEntry.id, 'option', optKey, 'sigs:', [...sessionSigs]);
+
+                        // Look for a catalog group that contains ALL these sessions.
+                        // Also try a "subset" match: at least one session matches and
+                        // the catalog group has the same type — for courses where the
+                        // manually-entered data may be a partial subset of the group.
+                        let matchingGroup = (course.groups || []).find(g => {
+                            if (g.type === 'other') return false;
+                            const catalogSigs = new Set(
+                                g.meetings.map(m => {
+                                    const day = DAY_LETTERS[m.dayOfWeek];
+                                    const start = formatMinutesToTime(m.startMinutes);
+                                    const end   = formatMinutesToTime(m.endMinutes);
+                                    return `${g.type}|${day}|${start}|${end}`;
+                                })
+                            );
+                            // Every manually-entered session must be present in the catalog group.
+                            return [...sessionSigs].every(sig => catalogSigs.has(sig));
+                        });
+
+                        if (!matchingGroup) {
+                            // Fallback: try matching by type only — find the first catalog
+                            // group whose type matches any of this option's sessions.
+                            // Useful when a pasted course has fewer sessions than the catalog
+                            // (e.g. only one meeting time captured out of two).
+                            const sessionTypes = new Set(sessions.map(s => TYPE_MAP_REVERSE[s.type] || s.type));
+                            const typeOnlyMatch = (course.groups || []).find(g =>
+                                g.type !== 'other' && sessionTypes.has(g.type) &&
+                                g.meetings.some(m => {
+                                    const day = DAY_LETTERS[m.dayOfWeek];
+                                    const start = formatMinutesToTime(m.startMinutes);
+                                    const end   = formatMinutesToTime(m.endMinutes);
+                                    return sessionSigs.has(`${g.type}|${day}|${start}|${end}`);
+                                })
+                            );
+                            if (typeOnlyMatch) {
+                                console.debug('[linkLegacy] partial match (type+time subset) for', courseName, 'group', optKey, '→ catalog group', typeOnlyMatch.id);
+                                matchingGroup = typeOnlyMatch;
+                            } else {
+                                console.debug('[linkLegacy] no catalog group matched for', courseName, 'option', optKey, 'in candidate', catalogEntry.id,
+                                    '\n  session sigs:', [...sessionSigs],
+                                    '\n  catalog groups:', (course.groups || []).filter(g => g.type !== 'other').map(g => ({
+                                        id: g.id, type: g.type,
+                                        sigs: g.meetings.map(m => `${g.type}|${DAY_LETTERS[m.dayOfWeek]}|${formatMinutesToTime(m.startMinutes)}|${formatMinutesToTime(m.endMinutes)}`)
+                                    }))
+                                );
+                                return;
+                            }
+                        }
+
+                        console.debug('[linkLegacy] linking', courseName, 'option', optKey, '→ catalog group', matchingGroup.id, '(candidate', catalogEntry.id + ')');
+
+                        // Rewrite the courseGroupId for all sessions in this option.
+                        sessions.forEach(s => { s.courseGroupId = matchingGroup.id; });
+                        anyLinked = true;
+                    });
+
+                    if (anyLinked) {
+                        _linkedThisSession.add(courseName); // only mark success
+                        // Persist the updated courseGroupIds and pick up exam data.
+                        saveState(false);
+                        // Kick off exam seeding now that the entries have real groupIds.
+                        _seedMissingCourseExams();
+                        // Re-render if the exam dialog or course list is open.
+                        if (document.getElementById('examsDialog').open) renderExamsDialog();
+                        updateUI(false);
+                        console.debug('[linkLegacy] successfully linked', courseName, 'via catalog candidate', catalogEntry.id);
+                    } else {
+                        console.debug('[linkLegacy] catalog candidate', catalogEntry.id, 'matched nothing for', courseName, '— trying next candidate');
+                        tryCandidate(i + 1);
+                    }
+                }).catch(err => {
+                    console.debug('[linkLegacy] fetch failed for', catalogEntry.id, err);
+                    tryCandidate(i + 1);
+                });
+            }
+
+            tryCandidate(0);
+        });
+    }
+
+    function renderExamsDialog() {
+        const body = document.getElementById('examsDialogBody');
+        if (!body) return;
+        const showUnchosen   = document.getElementById('examsShowUnchosenToggle')?.checked !== false;
+        const showMoedGimel  = document.getElementById('examsShowMoedGimelToggle')?.checked === true;
+        const currentSem     = getCurrentSemester();
+
+        // All entries for the current semester only
+        let allEntries = getAllExamEntries(currentSem);
+
+        // Filter מועד ג unless the toggle is on
+        if (!showMoedGimel) {
+            allEntries = allEntries.filter(e => getMoedClass(e.exam.type) !== 'moed-c');
+        }
+
+        // Hide unchosen (elective-but-not-active) courses if toggle is off
+        if (!showUnchosen) {
+            allEntries = allEntries.filter(e => e.enrolled);
+        }
+
+        if (allEntries.length === 0) {
+            // Check whether there simply are no exams for this semester yet
+            const allForSem = getAllExamEntries(currentSem);
+            const noData = allForSem.length === 0;
+            body.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">
+                <div style="font-size:48px; margin-bottom:12px;">📅</div>
+                ${noData
+                    ? `<p style="font-size:15px;">אין מועדי בחינות זמינים לסמסטר ${currentSem}.</p>
+                       <p style="font-size:13px;">הוסיפו קורסים דרך חיפוש הקורסים כדי לראות את מועדי הבחינות שלהם.</p>`
+                    : `<p style="font-size:15px;">כל המועדים מסוננים על ידי ההגדרות הנוכחיות.</p>`}
+            </div>`;
+            return;
+        }
+
+        const overlapDates = getOverlapDates(allEntries);
+
+        // Overlap banner (only enrolled courses can actually conflict)
+        let overlapBanner = '';
+        if (overlapDates.size > 0) {
+            const overlapList = Array.from(overlapDates).sort().map(d => {
+                const names = allEntries.filter(e => e.enrolled && e.exam.date === d).map(e => e.courseName);
+                return `<strong dir="ltr">${d}</strong>: ${names.join(', ')}`;
+            }).join('<br>');
+            overlapBanner = `<div class="exams-overlap-banner">
+                <div style="font-weight:bold; margin-bottom:6px;">⚠️ חפיפות במועדי בחינות:</div>
+                <div style="font-size:13px; line-height:1.8;">${overlapList}</div>
+            </div>`;
+        }
+
+        // Legend
+        const gimelBadge = showMoedGimel ? `<span class="moed-badge moed-c">מועד ג'</span>` : '';
+        const legend = `<div class="exams-legend">
+            <span class="moed-badge moed-a">מועד א'</span>
+            <span class="moed-badge moed-b">מועד ב'</span>
+            ${gimelBadge}
+            <span class="exams-legend-sep">|</span>
+            <span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--text-muted);">
+                <span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--border);border:1px solid var(--border);"></span>קורסי בחירה שלא הופעלו (עמומים)
+            </span>
+        </div>`;
+
+        // Month grids — groupEntriesByMonth fills empty months between first and last
+        const grouped = groupEntriesByMonth(allEntries);
+        const monthsHtml = grouped.map(({ year, month, entries }) =>
+            renderMonthGrid(year, month, entries, overlapDates)
+        ).join('');
+
+        body.innerHTML = `<div id="examsCalendarContent">${overlapBanner}${legend}${monthsHtml}</div>`;
+    }
+
+    function renderMonthGrid(year, month, entries, overlapDates) {
+        // Build a Set of all days that have exams in this month
+        const byDay = {};
+        entries.forEach(e => {
+            const p = parseExamDate(e.exam.date);
+            if (p) {
+                if (!byDay[p.day]) byDay[p.day] = [];
+                byDay[p.day].push(e);
+            }
+        });
+
+        // Calendar grid: first day of month
+        const firstDay = new Date(year, month, 1);
+        // JS: 0=Sun, but in Israel week starts Sunday. Map: Sun=0→col0, Mon=1→col1 … Sat=6→col6
+        const startCol = firstDay.getDay(); // 0=Sun=א
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+        // Day header (Sun-Sat in Hebrew)
+        const dayHeaders = ['א','ב','ג','ד','ה','ו','ש'].map(d =>
+            `<div class="exam-cal-cell exam-cal-hdr">${d}'</div>`).join('');
+
+        // Build cells
+        let cells = '';
+        // Blank cells before first day
+        for (let i = 0; i < startCol; i++) cells += `<div class="exam-cal-cell exam-cal-empty"></div>`;
+
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dayEntries = byDay[d] || [];
+            const dateStr = `${String(d).padStart(2,'0')}/${String(month+1).padStart(2,'0')}/${year}`;
+            const hasOverlap = overlapDates.has(dateStr) && dayEntries.some(e => e.enrolled);
+            const dayOfWeek = new Date(year, month, d).getDay();
+            const isShabbat = dayOfWeek === 6;
+
+            const cards = dayEntries.map(e => {
+                const moedClass = getMoedClass(e.exam.type);
+                const moedLabel = e.exam.type || '';
+                const alpha = e.enrolled ? '' : ' exam-card-unchosen';
+                const timeStr = e.exam.time ? ` · ${e.exam.time}` : '';
+                const accentColor = e.enrolled ? e.border : 'var(--border)';
+                const cardBg = e.enrolled
+                    ? `color-mix(in srgb, ${e.bg} 18%, var(--card))`
+                    : 'var(--bg-alt)';
+                const shoamLink = e.shoamId
+                    ? `<a href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${e.shoamId}" target="_blank" rel="noopener"
+                          onclick="event.stopPropagation()"
+                          class="exam-card-shoham-link" title="פתח בשוהם">שוהם ↗</a>`
+                    : '';
+                return `<div class="exam-card${alpha}"
+                    style="border-right: 3px solid ${accentColor}; background: ${cardBg};"
+                    title="${e.courseName}${timeStr}\n${moedLabel}"
+                    onclick="openExamCardEdit('${e.courseName.replace(/'/g,"\\'")}')">
+                    <div class="exam-card-top-row">
+                        ${e.exam.time ? `<span class="exam-card-time" dir="ltr">${e.exam.time}</span>` : ''}
+                        <span class="moed-badge-small ${moedClass}">${moedLabel.replace('מועד ','')}</span>
+                    </div>
+                    <span class="exam-card-name">${e.courseName}</span>
+                    ${shoamLink}
+                </div>`;
+            }).join('');
+
+            const overlapDot = hasOverlap ? `<span class="exam-overlap-dot" title="חפיפה!">⚠️</span>` : '';
+            cells += `<div class="exam-cal-cell ${dayEntries.length > 0 ? 'exam-cal-has-events' : ''} ${isShabbat ? 'exam-cal-shabbat' : ''}">
+                <div class="exam-cal-day-num">${d}${overlapDot}</div>
+                <div class="exam-cal-cards">${cards}</div>
+            </div>`;
+        }
+
+        // Fill trailing blank cells to complete the last row
+        const totalCells = startCol + daysInMonth;
+        const trailingBlanks = (7 - (totalCells % 7)) % 7;
+        for (let i = 0; i < trailingBlanks; i++) cells += `<div class="exam-cal-cell exam-cal-empty"></div>`;
+
+        return `<div class="exam-month-block">
+            <div class="exam-month-title">${HE_MONTHS[month]} ${year}</div>
+            <div class="exam-cal-grid">
+                ${dayHeaders}
+                ${cells}
+            </div>
+        </div>`;
+    }
+
+    // =====================================================================
+    // Exam editing (from searchAddDialog and from calendar card click)
+    // =====================================================================
+
+    let _examEditCourse = null; // hold the full course object for the edit dialog
+
+    function openExamCardEdit(courseName) {
+        // Open the exams list for this course — find it from map
+        const data = courseExamsMap.get(courseName);
+        if (!data || data.exams.length === 0) {
+            // No exams stored yet (e.g. course added before the exam feature) — open add dialog
+            openAddExam(null, courseName);
+            return;
+        }
+        if (data.exams.length === 1) {
+            openEditExam(null, courseName, 0, true);
+        } else {
+            // Multiple exams — open the first; user can't currently navigate between them
+            // from here, but at least it opens rather than silently doing nothing.
+            openEditExam(null, courseName, 0, true);
+        }
+    }
+
+    function openAddExam(courseId, courseName) {
+        document.getElementById('examEditTitle').innerText = 'הוסף מועד בחינה';
+        document.getElementById('examEditCourseId').value = courseId || '';
+        document.getElementById('examEditExamIndex').value = '-1'; // -1 = new
+        document.getElementById('examEditCourseName').value = courseName;
+        document.getElementById('examEditType').value = "מועד א'";
+        document.getElementById('examEditDate').value = '';
+        document.getElementById('examEditTime').value = '09:00';
+        document.getElementById('examEditDeleteBtn').style.display = 'none';
+        _examEditCourse = { id: courseId, nameHe: courseName };
+        document.getElementById('examEditDialog').showModal();
+    }
+
+    function openEditExam(courseId, courseName, examIndex, fromCalendar = false) {
+        const data = courseExamsMap.get(courseName);
+        const exams = data ? data.exams : [];
+
+        // If from calendar and multiple exams, show the first one; user can navigate
+        const exam = exams[examIndex] || null;
+
+        document.getElementById('examEditTitle').innerText = exam ? 'ערוך מועד בחינה' : 'הוסף מועד בחינה';
+        document.getElementById('examEditCourseId').value = courseId || '';
+        document.getElementById('examEditExamIndex').value = examIndex;
+        document.getElementById('examEditCourseName').value = courseName;
+        document.getElementById('examEditType').value = exam ? exam.type : "מועד א'";
+        document.getElementById('examEditDate').value = exam ? exam.date : '';
+        document.getElementById('examEditTime').value = exam && exam.time ? exam.time : '09:00';
+        document.getElementById('examEditDeleteBtn').style.display = exam ? 'inline-block' : 'none';
+        _examEditCourse = { id: courseId, nameHe: courseName };
+        document.getElementById('examEditDialog').showModal();
+    }
+
+    function saveExamEdit() {
+        const courseName = document.getElementById('examEditCourseName').value;
+        const examIndex = parseInt(document.getElementById('examEditExamIndex').value, 10);
+        const type = document.getElementById('examEditType').value;
+        const date = document.getElementById('examEditDate').value.trim();
+        const time = document.getElementById('examEditTime').value;
+
+        if (!date) return alert('יש להזין תאריך.');
+        if (!parseExamDate(date)) return alert('פורמט תאריך שגוי. השתמשו ב-DD/MM/YYYY.');
+
+        const newExam = { type, date, time };
+        const stored = courseExamsMap.get(courseName) || { exams: [], courseCode: null };
+        const exams = [...(stored.exams || [])];
+
+        if (examIndex === -1) {
+            exams.push(newExam);
+        } else {
+            exams[examIndex] = newExam;
+        }
+        // Sort by date
+        exams.sort((a, b) => {
+            const da = examToDate(a), db = examToDate(b);
+            return (da && db) ? da - db : 0;
+        });
+        // Rebuild per-semester buckets from the updated flat list so the calendar
+        // and the edit section both stay in sync after a save.
+        const semKeysAfterSave = new Set(
+            Object.keys(stored.examsBySemester || {}).concat(Object.keys(stored.shoamIdBySemester || {}))
+        );
+        if (semKeysAfterSave.size === 0) semKeysAfterSave.add('a').add('b').add('summer');
+        const rebuiltBySem = splitExamsBySemester(exams, semKeysAfterSave);
+        courseExamsMap.set(courseName, { ...stored, exams, examsBySemester: rebuiltBySem });
+        saveCourseExamsToStorage();
+
+        document.getElementById('examEditDialog').close();
+
+        // Refresh whichever dialog is open
+        if (_examEditCourse && document.getElementById('searchAddDialog').open) {
+            const course = { ..._examEditCourse, nameHe: courseName, exams };
+            renderExamsEditSection(course);
+            // searchAddExams (read-only) is kept empty; the edit section covers everything
+            const examsEl = document.getElementById('searchAddExams');
+            if (examsEl) examsEl.innerHTML = '';
+        }
+        if (document.getElementById('examsDialog').open) renderExamsDialog();
+    }
+
+    function deleteExamEntry() {
+        const courseName = document.getElementById('examEditCourseName').value;
+        const examIndex = parseInt(document.getElementById('examEditExamIndex').value, 10);
+        if (examIndex < 0) return;
+        if (!confirm('למחוק מועד בחינה זה?')) return;
+
+        const stored = courseExamsMap.get(courseName);
+        if (!stored) return;
+        const exams = stored.exams.filter((_, i) => i !== examIndex);
+        // Rebuild per-semester buckets so the calendar stays in sync after deletion.
+        const semKeysAfterDel = new Set(
+            Object.keys(stored.examsBySemester || {}).concat(Object.keys(stored.shoamIdBySemester || {}))
+        );
+        if (semKeysAfterDel.size === 0) semKeysAfterDel.add('a').add('b').add('summer');
+        const rebuiltBySemDel = splitExamsBySemester(exams, semKeysAfterDel);
+        courseExamsMap.set(courseName, { ...stored, exams, examsBySemester: rebuiltBySemDel });
+        saveCourseExamsToStorage();
+        document.getElementById('examEditDialog').close();
+
+        if (document.getElementById('searchAddDialog').open && _examEditCourse) {
+            const course = { ..._examEditCourse, nameHe: courseName, exams };
+            renderExamsEditSection(course);
+            const examsEl = document.getElementById('searchAddExams');
+            if (examsEl) examsEl.innerHTML = '';
+        }
+        if (document.getElementById('examsDialog').open) renderExamsDialog();
+    }
+
+    // When a card in the exams calendar is clicked — find all exams for that course
+    // and let the user pick which one to edit (or just open the first).
+    function openExamCardEditFromCalendar(courseName) {
+        const data = courseExamsMap.get(courseName);
+        if (!data || !data.exams || data.exams.length === 0) return;
+        if (data.exams.length === 1) {
+            openEditExam(null, courseName, 0, true);
+        } else {
+            // Show a small picker inline — open exam[0] for now, user can navigate
+            openEditExam(null, courseName, 0, true);
+        }
+    }
+
+    function toggleExamsExportMenu(event) {
+        event.stopPropagation();
+        const menu = document.getElementById('examsExportMenu');
+        if (!menu) return;
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.dropdown-content.open').forEach(m => m.classList.remove('open'));
+        if (!isOpen) menu.classList.add('open');
+    }
+
+    // =====================================================================
+    // Exam exports
+    // =====================================================================
+
+    function exportExamsPNG() {
+        const content = document.getElementById('examsCalendarContent');
+        if (!content) return alert('אין תוכן לייצא.');
+        ensureHtml2canvas().then(() => {
+            const bg = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
+            html2canvas(content, { backgroundColor: bg, scale: 2 }).then(canvas => {
+                const link = document.createElement('a');
+                link.download = 'exam_schedule.png';
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+            });
+        }).catch(() => alert('שגיאה בייצוא תמונה.'));
+    }
+
+    function exportExamsPDF() {
+        const content = document.getElementById('examsCalendarContent');
+        if (!content) return alert('אין תוכן לייצא.');
+        ensureHtml2canvas().then(() => {
+            const bg = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
+            return html2canvas(content, { backgroundColor: bg, scale: 2 });
+        }).then(canvas => {
+            if (typeof window.jspdf === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+                script.onload = () => finishExamPDF(canvas);
+                document.head.appendChild(script);
+            } else {
+                finishExamPDF(canvas);
+            }
+        }).catch(() => alert('שגיאה בייצוא PDF.'));
+    }
+
+    function finishExamPDF(canvas) {
+        const { jsPDF } = window.jspdf;
+        const w = canvas.width / 2, h = canvas.height / 2;
+        const pdf = new jsPDF({ orientation: w > h ? 'landscape' : 'portrait', unit: 'px', format: [w, h] });
+        pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, w, h);
+        pdf.save('exam_schedule.pdf');
+    }
+
+    function exportExamsICS() {
+        const currentSem = getCurrentSemester();
+        const semNames   = getCourseNamesForSemester(currentSem);
+        const showGimel  = document.getElementById('examsShowMoedGimelToggle')?.checked === true;
+        const lines = [
+            'BEGIN:VCALENDAR',
+            'VERSION:2.0',
+            'PRODID:-//Exam Schedule//HE',
+            'CALSCALE:GREGORIAN',
+        ];
+
+        const semKey = semesterKeyFromSelect(currentSem);
+        courseExamsMap.forEach((data, courseName) => {
+            if (!data.exams || !semNames.has(courseName)) return;
+            // Only export exam dates that belong to the current semester's month range.
+            const examsForSem = semKey
+                ? data.exams.filter(e => {
+                    const p = parseExamDate(e.date);
+                    if (!p) return true;
+                    return EXAM_MONTH_TO_SEMESTER[p.month + 1] === semKey;
+                })
+                : data.exams;
+            examsForSem.forEach(exam => {
+                if (!showGimel && getMoedClass(exam.type) === 'moed-c') return;
+                const p = parseExamDate(exam.date);
+                if (!p) return;
+                const pad2 = n => String(n).padStart(2,'0');
+                const dtStart = `${p.year}${pad2(p.month+1)}${pad2(p.day)}`;
+                const timeParts = exam.time ? exam.time.split(':') : null;
+                const dtFull = timeParts
+                    ? `${dtStart}T${pad2(timeParts[0])}${pad2(timeParts[1] || '0')}00`
+                    : dtStart;
+                lines.push('BEGIN:VEVENT');
+                lines.push(`SUMMARY:${courseName} — ${exam.type || 'בחינה'}`);
+                lines.push(`DTSTART${timeParts ? '' : ';VALUE=DATE'}:${dtFull}`);
+                lines.push(`DESCRIPTION:${data.courseCode || ''} | ${exam.type || ''}`);
+                lines.push(`UID:exam-${courseName.replace(/\s/g,'-')}-${exam.type}-${dtStart}@schedule`);
+                lines.push('END:VEVENT');
+            });
+        });
+
+        lines.push('END:VCALENDAR');
+        const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `exams-${currentSem}.ics`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }
+
+    function exportExamsJSON() {
+        const currentSem = getCurrentSemester();
+        const semNames   = getCourseNamesForSemester(currentSem);
+        const obj = {};
+        courseExamsMap.forEach((data, name) => {
+            if (semNames.has(name)) obj[name] = data;
+        });
+        const str = JSON.stringify(obj, null, 2);
+        const link = document.createElement('a');
+        link.href = 'data:text/json;charset=utf-8,' + encodeURIComponent(str);
+        link.download = `exams-${currentSem}.json`;
+        link.click();
     }
 
     /** The list view's per-semester "הוסף הכל" — adds every group of the
@@ -599,30 +1883,50 @@
             const semester = SEMESTER_MAP[group.semester] || "א'";
             let addedAny = false;
 
-            for (const m of group.meetings) {
-                const day = DAY_LETTERS[m.dayOfWeek];
-                if (!day) continue; // shouldn't happen — every meeting maps to a day now (see DAY_LETTERS)
-                const start = formatMinutesToTime(m.startMinutes);
-                const end = formatMinutesToTime(m.endMinutes);
-
-                // Guards only against adding the very same meeting of the very
-                // same group twice. It deliberately does NOT look at other
-                // groups: there's no cap on how many הרצאה/תרגיל/… groups may
-                // be picked, and two different groups that happen to share a
-                // time are both allowed — they simply become alternatives, and
-                // the solver still places exactly one of them at a time.
+            if (group.meetings.length === 0) {
+                // Timeless group — no scheduled hours. Add a single placeholder
+                // entry so the solver still satisfies this slot (it can't
+                // conflict with anything) and the course appears in the
+                // timeless strip below the calendar.
                 const isDup = rawCourses.some((c) =>
-                    (c.courseGroupId || c.id) === group.id &&
-                    c.day === day && c.start === start && c.end === end);
-                if (isDup) continue;
+                    (c.courseGroupId || c.id) === group.id && c.timeless);
+                if (!isDup) {
+                    rawCourses.push({
+                        id: Date.now() + Math.random().toString(36).substring(2, 8),
+                        courseGroupId: group.id,
+                        name: courseName, type, semester,
+                        day: null, start: null, end: null,
+                        timeless: true,
+                        isElective, color: null,
+                    });
+                    addedAny = true;
+                }
+            } else {
+                for (const m of group.meetings) {
+                    const day = DAY_LETTERS[m.dayOfWeek];
+                    if (!day) continue; // shouldn't happen — every meeting maps to a day now (see DAY_LETTERS)
+                    const start = formatMinutesToTime(m.startMinutes);
+                    const end = formatMinutesToTime(m.endMinutes);
 
-                rawCourses.push({
-                    id: Date.now() + Math.random().toString(36).substring(2, 8),
-                    courseGroupId: group.id, // real group id — also lets deleteCourseGroup() remove it cleanly
-                    name: courseName, type, semester, day, start, end,
-                    isElective, color: null,
-                });
-                addedAny = true;
+                    // Guards only against adding the very same meeting of the very
+                    // same group twice. It deliberately does NOT look at other
+                    // groups: there's no cap on how many הרצאה/תרגיל/… groups may
+                    // be picked, and two different groups that happen to share a
+                    // time are both allowed — they simply become alternatives, and
+                    // the solver still places exactly one of them at a time.
+                    const isDup = rawCourses.some((c) =>
+                        (c.courseGroupId || c.id) === group.id &&
+                        c.day === day && c.start === start && c.end === end);
+                    if (isDup) continue;
+
+                    rawCourses.push({
+                        id: Date.now() + Math.random().toString(36).substring(2, 8),
+                        courseGroupId: group.id, // real group id — also lets deleteCourseGroup() remove it cleanly
+                        name: courseName, type, semester, day, start, end,
+                        isElective, color: null,
+                    });
+                    addedAny = true;
+                }
             }
             if (addedAny && isElective) activeElectives.add(courseName);
         }
@@ -896,7 +2200,7 @@
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <div>
                     <strong>${course.nameHe}</strong>
-                    <span style="font-size:12px; color:var(--text-muted);"> · ${course.courseCode} · ${course.credits} נ"ז</span>
+                    <span style="font-size:12px; color:var(--text-muted);"> · ${course.courseCode} · ${Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1))} נ"ז</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                     <label class="toggle-label" style="font-size:12px;">
@@ -949,9 +2253,12 @@
             }
             
             function hasConflict(schedule, newClass) {
+                // Timeless entries have no day/time — they can never conflict.
+                if (!newClass.day || !newClass.start || !newClass.end) return null;
                 const newStart = timeToMins(newClass.start);
                 const newEnd = timeToMins(newClass.end);
                 for (const cls of schedule) {
+                    if (!cls.day || !cls.start || !cls.end) continue; // skip timeless
                     if (cls.day !== newClass.day) continue;
                     const start = timeToMins(cls.start);
                     const end = timeToMins(cls.end);
@@ -967,6 +2274,7 @@
 
                 const byDay = { 'א': [], 'ב': [], 'ג': [], 'ד': [], 'ה': [], 'ו': [] };
                 sched.forEach(cls => {
+                    if (!cls.day || !cls.start || !cls.end) return; // skip timeless entries
                     if (byDay[cls.day]) byDay[cls.day].push(cls);
                     if (timeToMins(cls.start) < 720) before12Count++; // 720 = 12:00
                 });
@@ -1177,6 +2485,29 @@
         if (savedElectives) activeElectives = new Set(JSON.parse(savedElectives));
 
         loadSavedSchedulesFromStorage();
+        loadCourseExamsFromStorage();
+        // Back-fill exam data for courses whose stored entry is an empty-exam
+        // stale seed from an older version of the app. Done here (on load) so
+        // data is ready before the user opens the exam dialog, not only after.
+        // Uses a short delay so the catalog index (loadCatalogIndex, above) has
+        // time to settle before we kick off individual course fetches.
+        setTimeout(_seedMissingCourseExams, 1500);
+        // Link manually-added / imported courses that match a catalog course
+        // by name — gives them the "+" button and exam data.  Runs after the
+        // catalog index has had time to load (2 s is intentionally > 1.5 s so
+        // _seedMissingCourseExams runs first for already-linked courses).
+        setTimeout(_linkLegacyCourses, 2000);
+
+        // Restore the semester the user was last looking at. Without this the
+        // selector always snaps back to א' on every reload, hiding all semester-ב
+        // courses and their exams / "+" buttons.
+        const savedSelectedSem = localStorage.getItem('myScheduleSelectedSemester');
+        if (savedSelectedSem) {
+            const sel = document.getElementById('semesterSelect');
+            if (sel && [...sel.options].some(o => o.value === savedSelectedSem)) {
+                sel.value = savedSelectedSem;
+            }
+        }
 
         // The top bar is sticky; give it a soft shadow once content slides under it.
         const topBar = document.getElementById('topBar');
@@ -1457,6 +2788,7 @@
 
     function onSemesterChange() {
         activeAlternativeKey = null;
+        localStorage.setItem('myScheduleSelectedSemester', getCurrentSemester());
         refreshCoursePickers();
         updateUI(false); // re-runs the solver, then re-renders the calendar (ghosts included)
     }
@@ -2048,8 +3380,10 @@
         e.stopPropagation();
         document.querySelector('.dropdown').classList.toggle('open');
     }
+
     document.addEventListener('click', () => {
         document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+        document.querySelectorAll('.dropdown-content.open').forEach(d => d.classList.remove('open'));
     });
 
     // --- Keyboard shortcuts ---
@@ -2202,6 +3536,10 @@
                 hasComputedOnce = false;
                 detachFromSavedSchedule();
                 updateUI(false);
+                // Attempt to link any manually-entered / old-export courses to
+                // catalog data so they get the "+" button and exam dates.
+                // Small delay so the catalog index is ready when this runs.
+                setTimeout(_linkLegacyCourses, 500);
                 alert("הנתונים יובאו בהצלחה!");
             } catch (err) { 
                 alert("שגיאה בייבוא הקובץ."); 
@@ -2227,6 +3565,8 @@
             document.getElementById('addAsElectiveToggle').checked = false;
             updateUI(true);
             document.getElementById('editDialog').close(); // now reached via the manual-add dialog, not the page directly
+            // Try to link newly-pasted courses to catalog data (exams / "+" button).
+            setTimeout(_linkLegacyCourses, 500);
         } else {
             if (text.length > 0) {
                 alert("לא חולצו קורסים חדשים מהטקסט.\nייתכן שהטקסט אינו בפורמט הנתמך או שהקורסים כבר קיימים במערכת בדיוק באותן השעות.");
@@ -2402,9 +3742,11 @@
 
     // UI strict check - ALWAYS detects true physical overlaps for accurate coloring
     function hasStrictConflict(schedule, newClass) {
+        if (!newClass.day || !newClass.start || !newClass.end) return null; // timeless — never conflicts
         const newStart = timeToMins(newClass.start);
         const newEnd = timeToMins(newClass.end);
         for (const cls of schedule) {
+            if (!cls.day || !cls.start || !cls.end) continue; // skip timeless
             if (cls.day !== newClass.day) continue;
             const start = timeToMins(cls.start);
             const end = timeToMins(cls.end);
@@ -2837,6 +4179,7 @@
         el.style.borderColor = colors.border;
         el.style.color = colors.text;
         el.style.setProperty('--event-bg', colors.bg);
+        el.style.setProperty('--event-border-color', colors.border);
 
         const courseKey = `${cls.name} - ${cls.type}`;
         if (!isGhost && activeAlternativeKey && activeAlternativeKey !== courseKey) el.classList.add('dimmed');
@@ -3055,9 +4398,48 @@
         return el;
     }
 
+    function renderTimelessStrip() {
+        const strip = document.getElementById('timelessStrip');
+        if (!strip) return;
+
+        const currentSem = getCurrentSemester();
+        const currentIdx = semesterIndices[currentSem] || 0;
+        const schedule = validSchedules[currentIdx] || [];
+
+        // Collect timeless entries from the current schedule (unique by courseGroupId)
+        const seen = new Set();
+        const timeless = schedule.filter(c => {
+            if (!c.timeless) return false;
+            const key = c.courseGroupId || c.id;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+
+        if (timeless.length === 0) {
+            strip.style.display = 'none';
+            return;
+        }
+
+        strip.style.display = '';
+        strip.innerHTML = `
+            <div class="timeless-strip-label">קורסים ללא שעות קבועות:</div>
+            <div class="timeless-chips">
+                ${timeless.map(c => {
+                    const colors = getCourseStyle(c.name, c.type, c.color);
+                    return `<span class="timeless-chip"
+                        style="background:${colors.bg}; border-color:${colors.border}; color:${colors.text};">
+                        ${c.name}
+                        <span class="timeless-chip-type">${c.type}</span>
+                    </span>`;
+                }).join('')}
+            </div>`;
+    }
+
     function renderCalendar() {
         const days = DAY_LETTERS;
         days.forEach(day => document.getElementById(`day-${day}`).innerHTML = '');
+        renderTimelessStrip();
         
         const timeGrid = document.getElementById('timeGrid');
         timeGrid.innerHTML = ''; 
@@ -3089,10 +4471,11 @@
             });
         }
 
-        if (classesToRender.length === 0 && previewGhosts.length === 0) {
+        const timedClassesToRender = classesToRender.filter(cls => cls.day && cls.start && cls.end);
+        if (timedClassesToRender.length === 0 && previewGhosts.length === 0) {
             minHour = 8; maxHour = 20;
         } else {
-            classesToRender.forEach(cls => {
+            timedClassesToRender.forEach(cls => {
                 const sHour = parseInt(cls.start.split(':')[0]);
                 const eHour = Math.ceil(timeToMins(cls.end) / 60);
                 if (sHour < minHour) minHour = sHour;
@@ -3135,6 +4518,7 @@
 
         schedule.forEach(cls => {
             if (previewedGroupIds && previewedGroupIds.has(cls.courseGroupId)) return;
+            if (!cls.day || !cls.start || !cls.end) return; // timeless — shown in strip below calendar
             if(elementsByDay[cls.day]) elementsByDay[cls.day].push({ classData: cls, isGhost: false });
         });
 
@@ -3148,6 +4532,7 @@
                 `${c.name} - ${c.type}` === activeAlternativeKey
             );
             allAlternatives.forEach(altClass => {
+                if (!altClass.day || !altClass.start || !altClass.end) return; // timeless
                 if (!schedule.some(c => c.id === altClass.id) && elementsByDay[altClass.day]) {
                     elementsByDay[altClass.day].push({ classData: altClass, isGhost: true });
                 }
@@ -3221,7 +4606,74 @@
                     el.style.right = `${rightPercent}%`;
                     el.style.left = 'auto'; 
                     el.style.marginRight = numCols === 1 ? '0' : '2px';
-                    
+
+                    // Classify blocks by height so CSS can scale content and
+                    // enable hover-expand for tight ones:
+                    //   data-small  (< 32px): micro — only tiny buttons + 1-line title
+                    //   data-medium (32–79px): compact — smaller buttons, 1-2 line title, no badges
+                    //   (none)      (≥ 80px): full layout — all content visible at rest
+                    const blockH = parseFloat(el.style.height) || 0;
+                    if (el.classList.contains('ghost')) {
+                        el.removeAttribute('data-small');
+                        el.removeAttribute('data-medium');
+                        el.removeAttribute('data-btn-rows');
+                    } else if (blockH < 32) {
+                        el.setAttribute('data-small', '');
+                        el.removeAttribute('data-medium');
+                        el.removeAttribute('data-btn-rows');
+                    } else if (blockH < 80) {
+                        el.setAttribute('data-medium', '');
+                        el.removeAttribute('data-small');
+                        el.removeAttribute('data-btn-rows');
+                    } else {
+                        el.removeAttribute('data-small');
+                        el.removeAttribute('data-medium');
+
+                        // For full-size blocks, check if buttons fit in one row.
+                        // Each .box-btn is 22px wide + 2px gap, plus 6px total padding.
+                        // Count buttons by querying the rendered .box-actions children.
+                        const boxActions = el.querySelector('.box-actions');
+                        if (boxActions) {
+                            const btnCount = boxActions.querySelectorAll('.box-btn').length;
+                            const btnRowWidth = btnCount * 22 + Math.max(0, btnCount - 1) * 2 + 10; // btns + gaps + padding
+                            // Approximate block pixel width from percentage + numCols
+                            const colEl = col;
+                            const colWidth = colEl.getBoundingClientRect
+                                ? (colEl.getBoundingClientRect().width || colEl.offsetWidth || 80)
+                                : (colEl.offsetWidth || 80);
+                            const blockW = colWidth / numCols - 4; // subtract margin
+                            if (btnCount > 1 && btnRowWidth > blockW && blockW > 0) {
+                                // How many buttons fit per row?
+                                const perRow = Math.max(1, Math.floor((blockW - 10) / 24));
+                                if (perRow < btnCount) {
+                                    el.setAttribute('data-btn-rows', '');
+                                    // Replace all buttons with a single "…" that reveals them on click
+                                    const fullHTML = boxActions.innerHTML;
+                                    boxActions.innerHTML = `
+                                        <button type="button" class="box-btn box-btn-overflow"
+                                                onpointerdown="event.stopPropagation()"
+                                                onclick="event.stopPropagation(); (function(btn){
+                                                    var pop = btn.parentElement.querySelector('.box-btn-popup');
+                                                    if (!pop) return;
+                                                    var isOpen = pop.classList.toggle('open');
+                                                    if (isOpen) {
+                                                        var closeHandler = function(e){
+                                                            if (!btn.parentElement.contains(e.target)){
+                                                                pop.classList.remove('open');
+                                                                document.removeEventListener('click', closeHandler, true);
+                                                            }
+                                                        };
+                                                        document.addEventListener('click', closeHandler, true);
+                                                    }
+                                                })(this)"
+                                                title="פעולות">…</button>
+                                        <div class="box-btn-popup">${fullHTML}</div>
+                                    `;
+                                }
+                            }
+                        }
+                    }
+
                     col.appendChild(el);
                 });
             });
@@ -3479,14 +4931,49 @@
 
     const TYPE_MAP_REVERSE = Object.fromEntries(Object.entries(TYPE_MAP).map(([k, v]) => [v, k]));
 
-    // ✏️ always opens the plain structured form (עריכה ידנית) now, for every
-    // entry — search-based or pasted alike. Picking a different/extra group
-    // of a search-based course is the "+" button's job (openAddMoreForCourse,
-    // which opens the calendar-preview bar); the pencil is purely "edit this
-    // one row's fields directly."
-    function openEdit(id) {
-        manualEditFallbackId = null;
-        openManualEditDialog(id);
+    // ✏️ Smart router: opens תצוגת רשימה (list dialog) for catalog-based
+    // courses so the user can swap groups easily. Falls back to עריכה ידנית
+    // only for manually-added courses where every type has just one option
+    // (nothing to pick from in a list).
+    async function openEdit(id) {
+        manualEditFallbackId = id;
+        const c = rawCourses.find(x => x.id === id);
+        if (!c) return;
+
+        const courseId = extractCourseIdFromGroupId(c.courseGroupId);
+        if (courseId) {
+            // Catalog course — open the list dialog (same as "תצוגת רשימה")
+            try {
+                const course = await fetchCourseDetail(courseId);
+                currentSearchAddCourse = course;
+                document.getElementById('searchAddManualEditBtn').style.display = 'inline-block';
+                document.getElementById('searchAddDialog').showModal();
+                renderSearchAddDialog(course);
+            } catch (err) {
+                // Fallback to manual edit if fetch fails
+                openManualEditDialog(id);
+            }
+            return;
+        }
+
+        // Manually-added course: check if every type in rawCourses for this
+        // course name has only one distinct option (one courseGroupId/id).
+        // If so, open עריכה ידנית directly; otherwise open the list dialog.
+        const courseName = c.name;
+        const byType = {};
+        rawCourses.filter(x => x.name === courseName).forEach(x => {
+            const key = x.courseGroupId || x.id;
+            if (!byType[x.type]) byType[x.type] = new Set();
+            byType[x.type].add(key);
+        });
+        const hasMultipleOptions = Object.values(byType).some(s => s.size > 1);
+
+        if (hasMultipleOptions) {
+            // Show a synthetic list dialog for the manual course
+            _openManualCourseListDialog(id);
+        } else {
+            openManualEditDialog(id);
+        }
     }
 
     // "still allow to edit it manually" — a fallback out of the search-based
@@ -3528,7 +5015,102 @@
         // README "Fixed: marking a course בחירה via search...". Hide it here
         // exactly like the paste box, per the same "new class only" rule.
         document.getElementById('editElectiveSection').style.display = 'none';
+
+        // Show a "תצוגת רשימה" button when this entry has a catalog course behind it.
+        // We anchor to the editDeleteBtn's parent so we're always in the right footer
+        // row without needing to know the footer's class name.
+        const courseId = extractCourseIdFromGroupId(c.courseGroupId);
+        let listViewBtn = document.getElementById('editDialogListViewBtn');
+        if (!listViewBtn) {
+            listViewBtn = document.createElement('button');
+            listViewBtn.id = 'editDialogListViewBtn';
+            listViewBtn.type = 'button';
+            listViewBtn.className = 'btn-simple';
+            listViewBtn.style.cssText = 'padding:6px 12px; font-size:13px;';
+            listViewBtn.innerText = 'תצוגת רשימה';
+
+            // Insert as the first child of the footer row that contains editDeleteBtn,
+            // so all buttons sit on one flex line.
+            const deleteBtn = document.getElementById('editDeleteBtn');
+            const footerRow = deleteBtn ? deleteBtn.parentElement : null;
+            if (footerRow) {
+                // Make sure the footer is a flex row so everything sits inline
+                footerRow.style.display = 'flex';
+                footerRow.style.flexWrap = 'wrap';
+                footerRow.style.gap = '8px';
+                footerRow.style.alignItems = 'center';
+                footerRow.insertBefore(listViewBtn, footerRow.firstChild);
+            } else {
+                document.getElementById('editDialog').appendChild(listViewBtn);
+            }
+        }
+        if (courseId) {
+            listViewBtn.style.display = 'inline-block';
+            listViewBtn.onclick = async () => {
+                document.getElementById('editDialog').close();
+                try {
+                    const course = await fetchCourseDetail(courseId);
+                    manualEditFallbackId = id;
+                    currentSearchAddCourse = course;
+                    document.getElementById('searchAddManualEditBtn').style.display = 'inline-block';
+                    document.getElementById('searchAddDialog').showModal();
+                    renderSearchAddDialog(course);
+                } catch(err) { alert('שגיאה בטעינת הקורס.'); }
+            };
+        } else {
+            listViewBtn.style.display = 'none';
+        }
+
         document.getElementById('editDialog').showModal();
+    }
+
+    /** Shows a simple group-picker for a manually-added course that has
+     *  multiple options per type (no catalog data, so we synthesise the list
+     *  from rawCourses directly). Uses the existing #searchAddDialog chrome. */
+    function _openManualCourseListDialog(id) {
+        const c = rawCourses.find(x => x.id === id);
+        if (!c) return;
+        const courseName = c.name;
+
+        // Group by type → list of distinct options (courseGroupId or id)
+        const byType = {};
+        rawCourses.filter(x => x.name === courseName).forEach(x => {
+            const key = x.courseGroupId || x.id;
+            if (!byType[x.type]) byType[x.type] = {};
+            if (!byType[x.type][key]) byType[x.type][key] = [];
+            byType[x.type][key].push(x);
+        });
+
+        let html = '';
+        Object.entries(byType).forEach(([type, options]) => {
+            const optList = Object.entries(options).map(([key, sessions]) => {
+                const times = sessions.map(s => `יום ${s.day}' ${s.start}-${s.end}`).join(', ');
+                const isActive = validSchedules.length > 0
+                    ? (validSchedules[semesterIndices[getCurrentSemester()]] || []).some(sc => (sc.courseGroupId || sc.id) === key)
+                    : false;
+                return `
+                    <div class="group-row${isActive ? ' added' : ''}">
+                        <div>
+                            <div style="font-size:12px; color:var(--text-muted);">${times}</div>
+                        </div>
+                        <button class="btn-simple" style="padding:5px 10px; font-size:12px;"
+                                onclick="openEdit('${sessions[0].id}'); document.getElementById('searchAddDialog').close();">
+                            עריכה
+                        </button>
+                    </div>`;
+            }).join('');
+            html += `<div class="group-section"><h4>${type}</h4>${optList}</div>`;
+        });
+
+        // Reuse the searchAddDialog for display
+        document.getElementById('searchAddTitle').innerText = courseName;
+        document.getElementById('searchAddMeta').innerHTML = 'קורס ידני';
+        document.getElementById('searchAddManualEditBtn').style.display = 'none';
+        document.getElementById('searchAddGroups').innerHTML = html || '<p style="color:var(--text-muted); font-size:13px;">אין קבוצות.</p>';
+        document.getElementById('searchAddExams').innerHTML = '';
+        const examsEdit = document.getElementById('searchAddExamsEdit');
+        if (examsEdit) examsEdit.innerHTML = '';
+        document.getElementById('searchAddDialog').showModal();
     }
 
     function deleteFromEdit() {
@@ -3684,3 +5266,74 @@
             setTimeout(fitTableToScreen, 50); 
         }
     }
+
+window.addExtraSessionRow = addExtraSessionRow;
+window.changeSchedule = changeSchedule;
+window.clearAll = clearAll;
+window.deleteExamEntry = deleteExamEntry;
+window.deleteFromEdit = deleteFromEdit;
+window.exportData = exportData;
+window.exportExamsICS = exportExamsICS;
+window.exportExamsJSON = exportExamsJSON;
+window.exportExamsPDF = exportExamsPDF;
+window.exportExamsPNG = exportExamsPNG;
+window.exportToClipboard = exportToClipboard;
+window.exportToImage = exportToImage;
+window.exportToPDF = exportToPDF;
+window.fitTableToScreen = fitTableToScreen;
+window.importData = importData;
+window.jumpToBestSchedule = jumpToBestSchedule;
+window.onDeptFilterSearchInput = onDeptFilterSearchInput;
+window.onEditTypeChange = onEditTypeChange;
+window.onSearchAddElectiveToggleChange = onSearchAddElectiveToggleChange;
+window.onSearchInput = onSearchInput;
+window.onSemesterChange = onSemesterChange;
+window.openExamsDialog = openExamsDialog;
+window.openManualAdd = openManualAdd;
+window.openManualEditFromSearch = openManualEditFromSearch;
+window.openSettingsDialog = openSettingsDialog;
+window.processInput = processInput;
+window.renderExamsDialog = renderExamsDialog;
+window.resetAllCustomColors = resetAllCustomColors;
+window.saveCurrentAsNewSchedule = saveCurrentAsNewSchedule;
+window.saveEdit = saveEdit;
+window.saveExamEdit = saveExamEdit;
+window.setAllowExerciseWithoutLecture = setAllowExerciseWithoutLecture;
+window.setDepartmentFilterEnabled = setDepartmentFilterEnabled;
+window.setDevMode = setDevMode;
+window.setShowFridayAlways = setShowFridayAlways;
+window.setTableZoom = setTableZoom;
+window.setTheme = setTheme;
+window.toggleCalendarViewMode = toggleCalendarViewMode;
+window.toggleExamsExportMenu = toggleExamsExportMenu;
+window.toggleExportMenu = toggleExportMenu;
+window.toggleFullScreen = toggleFullScreen;
+window.toggleTheme = toggleTheme;
+window.undoAction = undoAction;
+window.zoomCalendarStep = zoomCalendarStep;
+// Functions called from dynamically-generated onclick= attributes inside app.js
+window.addAllGroupsForCourse = addAllGroupsForCourse;
+window.addAllGroupsForCourseInSemester = addAllGroupsForCourseInSemester;
+window.deleteCourseGroup = deleteCourseGroup;
+window.exitPreview = exitPreview;
+window.jumpToAlternative = jumpToAlternative;
+window.loadMoreSearchResults = loadMoreSearchResults;
+window.openAddExam = openAddExam;
+window.openAddMoreForCourse = openAddMoreForCourse;
+window.openEdit = openEdit;
+window.openEditExam = openEditExam;
+window.openExamCardEdit = openExamCardEdit;
+window.pickPreviewGroup = pickPreviewGroup;
+window.removeAllGroupsForCourse = removeAllGroupsForCourse;
+window.removeAllGroupsForCourseInSemester = removeAllGroupsForCourseInSemester;
+window.removeDeptFilterChip = removeDeptFilterChip;
+window.removeElectiveAndJump = removeElectiveAndJump;
+window.selectDeptFilterResult = selectDeptFilterResult;
+window.selectSearchResult = selectSearchResult;
+window.showListFromPreview = showListFromPreview;
+window.switchPreviewType = switchPreviewType;
+window.toggleAlternatives = toggleAlternatives;
+window.toggleCourseGlobalElectiveState = toggleCourseGlobalElectiveState;
+window.toggleGroupInSchedule = toggleGroupInSchedule;
+window.toggleSidebarElective = toggleSidebarElective;
+})();

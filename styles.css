@@ -354,6 +354,12 @@
         /* Group picker (shown after choosing a search result) */
         .group-section { margin-bottom: 14px; }
         .group-section h4 { margin: 0 0 6px; font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+        .exam-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+        .exam-section h4 { margin: 0 0 8px; font-size: 13px; color: var(--text-muted); }
+        .exam-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
+        .exam-row:last-child { border-bottom: none; }
+        .exam-type { font-weight: 600; }
+        .exam-datetime { color: var(--text-muted); }
         .group-row {
             display: flex; justify-content: space-between; align-items: center; gap: 10px;
             border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px;
@@ -547,6 +553,14 @@
             box-sizing: border-box; 
             background-image: linear-gradient(to bottom, transparent 49px, var(--border) 49px, var(--border) 50px);
             background-size: 100% 50px;
+            /* Allow hovered events to overflow above sibling columns */
+            overflow: visible;
+        }
+        /* When a day-col contains a hovered event it needs to stack above
+           every other column so the expanded card is never clipped by a sibling. */
+        .day-col:has(.class-event:hover),
+        .day-col:has(.box-btn-popup.open) {
+            z-index: 50;
         }
         .day-col:last-child { border-left: none; }
 
@@ -576,14 +590,172 @@
             right: 0; 
             border: 2px solid; 
             border-radius: 6px; 
-            padding: 34px 4px 4px 4px; /* Gives full vertical clearance so buttons never touch the title */
+            /* No padding-top here — buttons sit in an absolute strip, content
+               below them is handled per-size tier below. Base padding gives
+               the title room without assuming any fixed button height. */
+            padding: 4px 4px 4px 4px;
             font-size: 12px; 
+            /* overflow: hidden by default so the block clips neatly; overridden
+               to visible on hover so content/buttons can float out */
             overflow: hidden; 
             box-sizing: border-box; 
             box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
-            transition: all 0.3s ease; 
+            transition: box-shadow 0.15s ease, z-index 0s, opacity 0.3s ease; 
             z-index: 2;
             color: var(--text-main);
+        }
+
+        /* ── Normal blocks (≥ 80px): full layout with buttons + title + meta ── */
+        /* Enough height for the 28px action strip + title + type badge + time.  */
+        .class-event:not([data-small]):not([data-medium]) {
+            padding-top: 34px; /* clearance above the absolute button strip */
+        }
+
+        /* ── Medium blocks (46–79px): buttons shrink, single-line title, no meta ── */
+        /* Set by JS via data-medium attribute.                                       */
+        .class-event[data-medium] {
+            padding-top: 26px;
+        }
+        .class-event[data-medium] .box-actions {
+            top: 2px;
+            left: 2px;
+            gap: 1px;
+            padding: 1px 2px;
+            border-radius: 5px;
+        }
+        .class-event[data-medium] .box-btn {
+            width: 18px;
+            height: 18px;
+        }
+        .class-event[data-medium] .box-btn svg {
+            width: 10px;
+            height: 10px;
+        }
+        .class-event[data-medium] .class-title {
+            font-size: clamp(8px, 12cqw, 11px);
+            -webkit-line-clamp: 2;
+            margin-bottom: 0;
+        }
+        .class-event[data-medium] .class-meta {
+            display: none;
+        }
+        .class-event[data-medium] .class-time {
+            font-size: clamp(8px, 10cqw, 9px);
+        }
+
+        /* ── Small blocks (< 46px): micro layout — tiny buttons, one-line title ── */
+        /* Set by JS via data-small attribute.                                        */
+        .class-event[data-small] {
+            padding: 2px 3px 2px 3px;
+        }
+        .class-event[data-small] .box-actions {
+            /* Tuck the action buttons into a tight strip at the top */
+            top: 1px;
+            left: 1px;
+            gap: 0px;
+            padding: 1px 2px;
+            border-radius: 4px;
+        }
+        .class-event[data-small] .box-btn {
+            width: 14px;
+            height: 14px;
+        }
+        .class-event[data-small] .box-btn svg {
+            width: 8px;
+            height: 8px;
+        }
+        .class-event[data-small] .class-title {
+            font-size: clamp(7px, 10cqw, 9px);
+            -webkit-line-clamp: 1;
+            margin-bottom: 0;
+            /* Push title past the button strip which overlaps at this size */
+            padding-right: 0;
+        }
+        .class-event[data-small] .class-meta,
+        .class-event[data-small] .class-time {
+            display: none;
+        }
+
+        /* ── Hover expand: pop any tight block above its neighbours ─────────────
+           Applies to BOTH data-small and data-medium (and any normal block that's
+           still tight). On hover the block goes overflow:visible and the
+           .class-content card expands to cover the entire event block completely,
+           hiding the original compact appearance beneath it.
+        ──────────────────────────────────────────────────────────────────────── */
+        @media (hover: hover) {
+            /* Trigger expand for small and medium blocks */
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover {
+                overflow: visible;
+                z-index: 100;
+                box-shadow: none; /* shadow moves to the expanded .class-content card */
+            }
+
+            /* Hide the original block's own border/background so only the
+               expanded card is visible — achieved by making the block itself
+               transparent while the .class-content card covers it completely. */
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover {
+                border-color: transparent !important;
+                background-color: transparent !important;
+            }
+
+            /* The inner content card fully covers the block from its top-left
+               corner, growing downward as needed. min-height ensures it's
+               always at least as tall as the original block.
+               Use --event-border-color (set inline by JS alongside --event-bg)
+               so the border is always the course's own colour — border-color:inherit
+               would pick up the transparent value set on the parent above. */
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-content,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-content {
+                position: absolute;
+                top: 0;
+                right: 0;
+                left: 0;
+                min-width: 120px;
+                min-height: 100%;
+                background: var(--event-bg, var(--card));
+                border: 2px solid var(--event-border-color, currentColor);
+                border-radius: 6px;
+                padding: 30px 6px 10px;
+                box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+                z-index: 1;
+            }
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-title,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-title {
+                font-size: clamp(10px, 13cqw, 13px);
+                -webkit-line-clamp: 4;
+            }
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-meta,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-meta {
+                display: flex;
+            }
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-time,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-time {
+                display: block;
+                font-size: clamp(9px, 11cqw, 11px);
+            }
+            /* Buttons restore to comfortable tap size on hover, sitting above
+               the expanded .class-content card (z-index: 3 > card's 1) */
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-actions,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-actions {
+                top: 3px;
+                left: 3px;
+                gap: 2px;
+                padding: 2px 3px;
+                border-radius: 6px;
+                z-index: 3;
+            }
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-btn,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-btn {
+                width: 22px;
+                height: 22px;
+            }
+            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-btn svg,
+            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-btn svg {
+                width: 12px;
+                height: 12px;
+            }
         }
 
         .class-event.text-area { cursor: text; }
@@ -612,6 +784,51 @@
 
         .exporting .class-event {
             padding-top: 10px !important;
+        }
+
+        /* ── Timeless courses strip ──────────────────────────────────────────
+           Appears below the calendar when the current schedule includes
+           courses that were added without fixed hours (timeless: true).
+        ─────────────────────────────────────────────────────────────────── */
+        .timeless-strip {
+            margin-top: 8px;
+            padding: 10px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-size: 13px;
+            transition: background 0.3s;
+        }
+        .timeless-strip-label {
+            color: var(--text-muted);
+            font-weight: 600;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .timeless-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .timeless-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            border-radius: 99px;
+            border: 2px solid;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+        .timeless-chip-type {
+            font-size: 10px;
+            font-weight: normal;
+            opacity: 0.8;
         }
 
         .class-title { 
@@ -693,6 +910,53 @@
         .box-btn:hover:not(.locked) {
             transform: scale(1.1);
             background: rgba(0, 0, 0, 0.06);
+        }
+
+        /* When the popup is open, let it escape the event block's clip */
+        .class-event:has(.box-btn-popup.open) {
+            overflow: visible !important;
+            z-index: 100 !important;
+        }
+
+        /* When buttons don't fit in a single row, show a "…" toggle instead */
+        .box-btn-overflow {
+            font-size: 13px;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+
+        /* Popup panel that holds the real buttons, revealed on "…" click.
+           Position is relative to .box-actions (which is position:absolute).
+           We render it below the actions strip; since .class-event now becomes
+           overflow:visible when the popup is open, it can extend freely. */
+        .box-btn-popup {
+            display: none;
+            position: absolute;
+            top: calc(100% + 3px);
+            left: 0;
+            z-index: 201;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+            padding: 5px 7px;
+            flex-direction: row;
+            gap: 4px;
+            align-items: center;
+            white-space: nowrap;
+            min-width: max-content;
+        }
+        .box-btn-popup.open {
+            display: flex;
+        }
+        /* Ensure popup buttons use comfortable full sizing regardless of block tier */
+        .box-btn-popup .box-btn {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        .box-btn-popup .box-btn svg {
+            width: 14px !important;
+            height: 14px !important;
         }
 
         .box-btn:active:not(.locked) {
@@ -1061,4 +1325,270 @@
         body.schedule-only-mode .container {
             max-width: 100% !important;
             margin: 0 !important;
+        }
+        /* =========================================
+           Exam Schedule Dialog & Calendar
+        ========================================= */
+
+        /* Moed badges — distinctive colored pills for each exam type */
+        .moed-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+        .moed-a  { background: #e8f5e9; color: #1b5e20; border: 1.5px solid #43a047; }
+        .moed-b  { background: #fff3e0; color: #7f3300; border: 1.5px solid #fb8c00; }
+        .moed-c  { background: #fce4ec; color: #7b0028; border: 1.5px solid #e91e63; }
+        .moed-other { background: #f3e5f5; color: #4a148c; border: 1.5px solid #9c27b0; }
+
+        html[data-theme="dark"] .moed-a  { background: #1b3d1e; color: #a5d6a7; border-color: #43a047; }
+        html[data-theme="dark"] .moed-b  { background: #3e2000; color: #ffcc80; border-color: #fb8c00; }
+        html[data-theme="dark"] .moed-c  { background: #3b0017; color: #f48fb1; border-color: #e91e63; }
+        html[data-theme="dark"] .moed-other { background: #2a0047; color: #ce93d8; border-color: #9c27b0; }
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-a  { background:#1b3d1e; color:#a5d6a7; border-color:#43a047; }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-b  { background:#3e2000; color:#ffcc80; border-color:#fb8c00; }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-c  { background:#3b0017; color:#f48fb1; border-color:#e91e63; }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-other { background:#2a0047; color:#ce93d8; border-color:#9c27b0; }
+        }
+
+        .moed-badge-small {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 20px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 1.5;
+            white-space: nowrap;
+            flex-shrink: 0;
+            letter-spacing: 0.01em;
+        }
+        /* Light theme: just a tinted pill, no heavy border */
+        .moed-badge-small.moed-a  { background: rgba(67,160,71,0.15);  color: #2e7d32; border: 1px solid rgba(67,160,71,0.4); }
+        .moed-badge-small.moed-b  { background: rgba(251,140,0,0.15);   color: #e65100; border: 1px solid rgba(251,140,0,0.4); }
+        .moed-badge-small.moed-c  { background: rgba(233,30,99,0.12);   color: #880e4f; border: 1px solid rgba(233,30,99,0.35); }
+        .moed-badge-small.moed-other { background: rgba(156,39,176,0.12); color: #4a148c; border: 1px solid rgba(156,39,176,0.35); }
+        /* Dark theme */
+        html[data-theme="dark"] .moed-badge-small.moed-a     { background: rgba(67,160,71,0.2);  color: #a5d6a7; border-color: rgba(67,160,71,0.5); }
+        html[data-theme="dark"] .moed-badge-small.moed-b     { background: rgba(251,140,0,0.2);  color: #ffcc80; border-color: rgba(251,140,0,0.5); }
+        html[data-theme="dark"] .moed-badge-small.moed-c     { background: rgba(233,30,99,0.2);  color: #f48fb1; border-color: rgba(233,30,99,0.5); }
+        html[data-theme="dark"] .moed-badge-small.moed-other { background: rgba(156,39,176,0.2); color: #ce93d8; border-color: rgba(156,39,176,0.5); }
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-badge-small.moed-a     { background:rgba(67,160,71,0.2);  color:#a5d6a7; border-color:rgba(67,160,71,0.5); }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-badge-small.moed-b     { background:rgba(251,140,0,0.2);  color:#ffcc80; border-color:rgba(251,140,0,0.5); }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-badge-small.moed-c     { background:rgba(233,30,99,0.2);  color:#f48fb1; border-color:rgba(233,30,99,0.5); }
+            html:not([data-theme="light"]):not([data-theme="dark"]) .moed-badge-small.moed-other { background:rgba(156,39,176,0.2); color:#ce93d8; border-color:rgba(156,39,176,0.5); }
+        }
+
+        /* ---- Dialog layout ---- */
+        #examsDialog { padding: 0; }
+        /* Flex column layout only when the dialog is actually open — if it were
+           on the element itself, display:flex would override the browser's
+           built-in display:none for a closed <dialog>, making it always visible. */
+        #examsDialog[open] { display: flex; flex-direction: column; }
+
+        .exams-dialog-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--card);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        /* ---- Overlap banner ---- */
+        .exams-overlap-banner {
+            background: #fff8e1;
+            border: 1.5px solid #ffd54f;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 18px;
+            font-size: 13px;
+        }
+        html[data-theme="dark"] .exams-overlap-banner { background: #3e2f00; border-color: #f9a825; }
+        @media (prefers-color-scheme: dark) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) .exams-overlap-banner { background:#3e2f00; border-color:#f9a825; }
+        }
+
+        /* ---- Legend ---- */
+        .exams-legend {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+        .exams-legend-sep { color: var(--border); margin: 0 2px; }
+
+        /* ---- Month block ---- */
+        .exam-month-block { margin-bottom: 32px; }
+        .exam-month-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid var(--primary);
+            color: var(--primary);
+        }
+
+        /* ---- Calendar grid ---- */
+        .exam-cal-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 3px;
+        }
+        .exam-cal-cell {
+            border-radius: 6px;
+            min-height: 80px;
+            padding: 0;
+            background: var(--bg-alt);
+            border: 1px solid var(--border);
+            font-size: 12px;
+            box-sizing: border-box;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        .exam-cal-hdr {
+            min-height: 0;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 12px;
+            background: var(--bg);
+            border: none;
+            color: var(--text-muted);
+        }
+        .exam-cal-empty {
+            background: transparent;
+            border: 1px solid transparent;
+        }
+        .exam-cal-shabbat { background: var(--bg); opacity: 0.7; }
+        .exam-cal-has-events { background: var(--card); }
+        .exam-cal-day-num {
+            font-weight: 700;
+            font-size: 12px;
+            padding: 2px 5px 1px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            flex-shrink: 0;
+        }
+        .exam-overlap-dot { font-size: 10px; line-height: 1; }
+        .exam-cal-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            width: 100%;
+            padding: 0 3px 3px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        /* ---- Exam card — accent-line design ---- */
+        .exam-card {
+            border-radius: 5px;
+            /* right border is set inline (accent color from course identity) */
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            border-left: 1px solid var(--border);
+            padding: 4px 6px 4px 5px;
+            font-size: 11px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            flex: 1;                /* stretch to fill available vertical space */
+            min-height: 0;          /* allow shrinking below content size if needed */
+            transition: box-shadow 0.12s, transform 0.12s;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.07);
+            word-break: break-word;
+            color: var(--text-main);
+        }
+        .exam-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.13);
+        }
+        .exam-card-unchosen {
+            border-right-color: var(--border) !important;
+            border-color: var(--border) !important;
+            background: var(--bg-alt) !important;
+            color: var(--text-muted) !important;
+            opacity: 0.5;
+        }
+        /* Top row: time (muted) + compact moed badge, spaced apart */
+        .exam-card-top-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            min-height: 16px;
+        }
+        .exam-card-name {
+            font-weight: 700;
+            font-size: 11px;
+            line-height: 1.3;
+            color: var(--text-main);
+        }
+        .exam-card-unchosen .exam-card-name { color: var(--text-muted); }
+        /* Time in muted gray */
+        .exam-card-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+        /* Discreet שוהם footer link */
+        .exam-card-shoham-link {
+            font-size: 9px;
+            color: var(--text-muted);
+            text-decoration: none;
+            opacity: 0.7;
+            display: inline-block;
+            margin-top: 1px;
+            transition: opacity 0.1s;
+        }
+        .exam-card-shoham-link:hover { opacity: 1; text-decoration: underline; }
+
+        /* ---- Exam section in searchAddDialog (editable) ---- */
+        .exam-section-edit {
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* ---- Exam exports dropdown in exams dialog ---- */
+        #examsExportMenu {
+            right: 0;
+            left: auto;
+        }
+        #examsExportMenu.open { display: block; }
+
+        /* ---- Responsive: stack to 1 column on very small screens ---- */
+        @media (max-width: 500px) {
+            .exam-cal-grid { grid-template-columns: repeat(7, 1fr); gap: 1px; }
+            .exam-cal-cell { min-height: 50px; padding: 0; font-size: 10px; }
+            .exam-cal-day-num { padding: 1px 3px 0; font-size: 10px; }
+            .exam-cal-cards { padding: 0 2px 2px; gap: 1px; }
+            .exam-card { font-size: 9px; padding: 2px 3px 2px 2px; gap: 1px; }
+            .exam-card-name { font-size: 9px; }
+            .exam-card-top-row { min-height: 12px; gap: 2px; }
+            .exam-card-time { font-size: 8px; }
+            .moed-badge-small { font-size: 8px; padding: 0 3px; }
+            .exam-card-shoham-link { display: none; } /* too small to be useful on tiny cells */
+            .exam-month-title { font-size: 15px; }
         }
