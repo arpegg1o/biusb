@@ -1679,47 +1679,525 @@
     }
 
     // =====================================================================
-    // Exam exports
+    // Exam exports — native Canvas 2D, faithful to the site's visual design.
+    //
+    // Layout mirrors the DOM exactly:
+    //   • Full-width canvas (no multi-column month layout)
+    //   • One month block per section, stacked vertically → long image / multi-page PDF
+    //   • 7-column calendar grid (Sun … Sat), cells with day numbers
+    //   • Exam cards inside cells: right-side accent border in course colour,
+    //     moed-badge-small (א׳/ב׳/ג׳), time (muted), bold course name
+    //   • Unchosen electives rendered at 50% opacity
+    //   • Overlap banner at the top when conflicts exist
+    //   • Respects current light/dark theme
     // =====================================================================
 
-    function exportExamsPNG() {
-        const content = document.getElementById('examsCalendarContent');
-        if (!content) return alert('אין תוכן לייצא.');
-        ensureHtml2canvas().then(() => {
-            const bg = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
-            html2canvas(content, { backgroundColor: bg, scale: 2 }).then(canvas => {
-                const link = document.createElement('a');
-                link.download = 'exam_schedule.png';
-                link.href = canvas.toDataURL('image/png');
-                link.click();
+    /** True when the page is currently showing the dark theme. */
+    function _examIsDark() {
+        const t = document.documentElement.getAttribute('data-theme');
+        if (t === 'dark')  return true;
+        if (t === 'light') return false;
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
+    /**
+     * Draw a rounded rectangle path (no fill/stroke — caller does that).
+     * Safe: r is clamped so it never exceeds half the shorter side.
+     */
+    function _examRRect(ctx, x, y, w, h, r) {
+        r = Math.min(r, w / 2, h / 2);
+        if (r <= 0) { ctx.rect(x, y, w, h); return; }
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);   ctx.arcTo(x+w, y,   x+w, y+r,   r);
+        ctx.lineTo(x + w, y + h-r); ctx.arcTo(x+w, y+h, x+w-r, y+h, r);
+        ctx.lineTo(x + r, y + h);   ctx.arcTo(x,   y+h, x,   y+h-r, r);
+        ctx.lineTo(x, y + r);       ctx.arcTo(x,   y,   x+r, y,     r);
+        ctx.closePath();
+    }
+
+    /** Colours for the small in-card moed badge, matching .moed-badge-small in CSS. */
+    function _moedBadgeColors(moedClass, dark) {
+        const T = {
+            'moed-a': dark
+                ? { bg: 'rgba(67,160,71,0.22)',  text: '#a5d6a7', border: 'rgba(67,160,71,0.55)' }
+                : { bg: 'rgba(67,160,71,0.15)',  text: '#2e7d32', border: 'rgba(67,160,71,0.4)'  },
+            'moed-b': dark
+                ? { bg: 'rgba(251,140,0,0.22)',  text: '#ffcc80', border: 'rgba(251,140,0,0.55)' }
+                : { bg: 'rgba(251,140,0,0.15)',  text: '#e65100', border: 'rgba(251,140,0,0.4)'  },
+            'moed-c': dark
+                ? { bg: 'rgba(233,30,99,0.22)',  text: '#f48fb1', border: 'rgba(233,30,99,0.55)' }
+                : { bg: 'rgba(233,30,99,0.12)',  text: '#880e4f', border: 'rgba(233,30,99,0.35)' },
+        };
+        return T[moedClass] || (dark
+            ? { bg: 'rgba(156,39,176,0.22)', text: '#ce93d8', border: 'rgba(156,39,176,0.55)' }
+            : { bg: 'rgba(156,39,176,0.12)', text: '#4a148c', border: 'rgba(156,39,176,0.35)' });
+    }
+
+    /**
+     * Build a single tall Canvas that mirrors the exam-calendar dialog.
+     * Returns the canvas element, or null if there are no entries to show.
+     */
+    function buildExamsCanvas() {
+        const currentSem    = getCurrentSemester();
+        const showMoedGimel = document.getElementById('examsShowMoedGimelToggle')?.checked === true;
+        const showUnchosen  = document.getElementById('examsShowUnchosenToggle')?.checked !== false;
+        const dark          = _examIsDark();
+
+        let allEntries = getAllExamEntries(currentSem);
+        if (!showMoedGimel) allEntries = allEntries.filter(e => getMoedClass(e.exam.type) !== 'moed-c');
+        if (!showUnchosen)  allEntries = allEntries.filter(e => e.enrolled);
+        if (allEntries.length === 0) return null;
+
+        // ── Resolve theme colours from live CSS vars ──────────────────────
+        const cs = getComputedStyle(document.documentElement);
+        const cv = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
+        const BG      = cv('--bg',        dark ? '#121212' : '#f5f7fa');
+        const CARD    = cv('--card',      dark ? '#1e1e1e' : '#ffffff');
+        const BGALT   = cv('--bg-alt',    dark ? '#2c2c2c' : '#f8f9fa');
+        const BORDER  = cv('--border',    dark ? '#333333' : '#e1e4e8');
+        const TEXT    = cv('--text-main', dark ? '#e0e0e0' : '#333333');
+        const MUTED   = cv('--text-muted',dark ? '#aaaaaa' : '#666666');
+        const PRIMARY = cv('--primary',   '#4a90e2');
+        const FONT    = '"Segoe UI", Tahoma, Geneva, Verdana, sans-serif';
+
+        // ── Layout (all in logical px; canvas drawn at SCALE× for retina) ─
+        const SCALE     = 2;
+        const PAD       = 20;           // outer horizontal padding
+        const CANVAS_W  = 900;          // logical width (matches a comfortable dialog width)
+        const GRID_W    = CANVAS_W - PAD * 2;
+        const GAP       = 3;            // gap between grid cells
+        const CELL_W    = (GRID_W - GAP * 6) / 7;  // 7 columns
+        const CELL_MIN_H= 80;           // minimum cell height (matches CSS min-height)
+        const CARD_PAD_H= 4;            // card vertical padding
+        const CARD_PAD_V= 5;            // card horizontal padding
+        const CARD_RADIUS = 5;
+        const BADGE_H   = 16;           // height of the small moed badge pill
+        const CARD_LINE_H = 15;         // line-height for course name text
+        const DOW_HDR_H = 28;           // day-of-week header row height
+        const MONTH_TITLE_H = 38;       // "ינואר 2027" heading row
+        const MONTH_GAP = 32;           // gap between month blocks
+
+        const HE_DOW    = ["א'","ב'","ג'","ד'","ה'","ו'","ש'"];  // Sun→Sat
+        const HE_MOS    = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני',
+                           'יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+
+        const overlapDates = getOverlapDates(allEntries);
+        const grouped      = groupEntriesByMonth(allEntries);
+
+        // ── Pass 1: measure total canvas height ───────────────────────────
+        // For each month we need to know the actual height of every cell
+        // (cells with many cards are taller than CELL_MIN_H).
+        // We do a dry-run measure with a temp canvas so text wrapping is accurate.
+        const measureCtx = document.createElement('canvas').getContext('2d');
+
+        /** Estimate height of one exam card (name may wrap). */
+        function measureCardH(entry) {
+            const moedLabel = (entry.exam.type || '').replace('מועד ', '');
+            const hasTime   = !!entry.exam.time;
+
+            // top row: badge + time (single line)
+            const topRowH = BADGE_H + CARD_PAD_H;
+
+            // course name — may wrap
+            const nameMaxW = CELL_W - CARD_PAD_V * 2 - 3 /* accent border */ - 4;
+            measureCtx.font = `bold ${11}px ${FONT}`;
+            const words = entry.courseName.split(' ');
+            let line = '', lines = 0;
+            for (const w of words) {
+                const test = line ? line + ' ' + w : w;
+                if (measureCtx.measureText(test).width > nameMaxW && line) {
+                    lines++;
+                    line = w;
+                } else { line = test; }
+            }
+            if (line) lines++;
+            const nameH = lines * CARD_LINE_H;
+
+            return CARD_PAD_H + topRowH + nameH + CARD_PAD_H + 2; // +2 for gap between rows
+        }
+
+        /** Compute the pixel height of one calendar cell for a given day's entries. */
+        function cellHeight(entries) {
+            if (entries.length === 0) return CELL_MIN_H;
+            const dayNumH = 22;
+            const cardPad = 2; // gap between cards
+            let h = dayNumH + 3; // day number + small padding
+            entries.forEach(e => { h += measureCardH(e) + cardPad; });
+            h += 3; // bottom padding
+            return Math.max(CELL_MIN_H, h);
+        }
+
+        /** For a given month, compute the height of each calendar row (week). */
+        function monthRowHeights(year, month, entries) {
+            const byDay = {};
+            entries.forEach(e => {
+                const p = parseExamDate(e.exam.date);
+                if (p) (byDay[p.day] = byDay[p.day] || []).push(e);
             });
-        }).catch(() => alert('שגיאה בייצוא תמונה.'));
+            const startCol   = new Date(year, month, 1).getDay();
+            const daysInMonth= new Date(year, month + 1, 0).getDate();
+            const totalCells = startCol + daysInMonth;
+            const numRows    = Math.ceil(totalCells / 7);
+
+            const rowH = [];
+            for (let row = 0; row < numRows; row++) {
+                let maxH = CELL_MIN_H;
+                for (let col = 0; col < 7; col++) {
+                    const dayNum = row * 7 + col - startCol + 1;
+                    if (dayNum < 1 || dayNum > daysInMonth) continue;
+                    maxH = Math.max(maxH, cellHeight(byDay[dayNum] || []));
+                }
+                rowH.push(maxH);
+            }
+            return rowH;
+        }
+
+        // Overlap banner
+        const BANNER_H = overlapDates.size > 0 ? 56 : 0;
+        // Legend
+        const LEGEND_H = 36;
+
+        let totalH = PAD + BANNER_H + (BANNER_H ? 16 : 0) + LEGEND_H + 20;
+        const monthMeta = grouped.map(m => {
+            const rh = monthRowHeights(m.year, m.month, m.entries);
+            const mh = MONTH_TITLE_H + DOW_HDR_H + rh.reduce((s, h) => s + h + GAP, 0);
+            totalH += mh + MONTH_GAP;
+            return { ...m, rowHeights: rh, blockH: mh };
+        });
+        totalH += PAD;
+
+        // ── Create canvas ─────────────────────────────────────────────────
+        const canvas = document.createElement('canvas');
+        canvas.width  = CANVAS_W * SCALE;
+        canvas.height = totalH  * SCALE;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(SCALE, SCALE);
+
+        // Page background
+        ctx.fillStyle = BG;
+        ctx.fillRect(0, 0, CANVAS_W, totalH);
+
+        let y = PAD;
+
+        // ── Overlap banner ────────────────────────────────────────────────
+        if (overlapDates.size > 0) {
+            const bx = PAD, bw = GRID_W;
+            ctx.fillStyle = dark ? '#3e2f00' : '#fff8e1';
+            _examRRect(ctx, bx, y, bw, BANNER_H, 8);
+            ctx.fill();
+            ctx.strokeStyle = '#ffd54f';
+            ctx.lineWidth = 1.5;
+            _examRRect(ctx, bx, y, bw, BANNER_H, 8);
+            ctx.stroke();
+
+            ctx.font = `bold 13px ${FONT}`;
+            ctx.fillStyle = dark ? '#ffd54f' : '#5d4037';
+            ctx.textBaseline = 'top';
+            ctx.textAlign = 'right';
+            ctx.fillText('⚠️ חפיפות במועדי בחינות:', CANVAS_W - PAD - 12, y + 10);
+            ctx.font = `12px ${FONT}`;
+            ctx.fillStyle = dark ? '#ffcc80' : '#6d4c00';
+            const overlapLine = Array.from(overlapDates).sort().map(d => {
+                const names = allEntries.filter(e => e.enrolled && e.exam.date === d).map(e => e.courseName);
+                return `${d}: ${names.join(', ')}`;
+            }).join('   •   ');
+            ctx.fillText(overlapLine, CANVAS_W - PAD - 12, y + 30);
+            y += BANNER_H + 16;
+        }
+
+        // ── Legend ────────────────────────────────────────────────────────
+        const legendItems = [
+            { label: "מועד א'", cls: 'moed-a' },
+            { label: "מועד ב'", cls: 'moed-b' },
+            ...(showMoedGimel ? [{ label: "מועד ג'", cls: 'moed-c' }] : []),
+        ];
+        ctx.textBaseline = 'middle';
+        let lx = PAD;
+        const LBH = 22, LBR = 11; // legend badge height & border-radius
+        legendItems.forEach(item => {
+            const c = _moedBadgeColors(item.cls, dark);
+            ctx.font = `bold 12px ${FONT}`;
+            const tw = ctx.measureText(item.label).width;
+            const lbw = tw + 22;
+            ctx.fillStyle = c.bg;
+            _examRRect(ctx, lx, y + (LEGEND_H - LBH) / 2, lbw, LBH, LBR);
+            ctx.fill();
+            ctx.strokeStyle = c.border;
+            ctx.lineWidth = 1.5;
+            _examRRect(ctx, lx, y + (LEGEND_H - LBH) / 2, lbw, LBH, LBR);
+            ctx.stroke();
+            ctx.fillStyle = c.text;
+            ctx.textAlign = 'center';
+            ctx.fillText(item.label, lx + lbw / 2, y + LEGEND_H / 2);
+            lx += lbw + 10;
+        });
+        // Unchosen legend dot
+        const dotX = lx + 14, dotY = y + LEGEND_H / 2;
+        ctx.beginPath(); ctx.arc(dotX, dotY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = BORDER; ctx.fill();
+        ctx.strokeStyle = BORDER; ctx.lineWidth = 1; ctx.stroke();
+        ctx.font = `12px ${FONT}`;
+        ctx.fillStyle = MUTED;
+        ctx.textAlign = 'right';
+        ctx.fillText("קורסי בחירה שלא הופעלו (עמומים)", CANVAS_W - PAD, y + LEGEND_H / 2);
+        y += LEGEND_H + 20;
+
+        // ── Month blocks ──────────────────────────────────────────────────
+        monthMeta.forEach(({ year: yr, month: mo, entries: mEntries, rowHeights }) => {
+            // Month title
+            ctx.font = `bold 18px ${FONT}`;
+            ctx.fillStyle = PRIMARY;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(`${HE_MOS[mo]} ${yr}`, CANVAS_W - PAD, y + MONTH_TITLE_H / 2);
+            // Underline
+            ctx.fillStyle = PRIMARY;
+            ctx.fillRect(PAD, y + MONTH_TITLE_H - 3, GRID_W, 2);
+            y += MONTH_TITLE_H;
+
+            // Day-of-week headers (Sun=right … Sat=left in RTL)
+            for (let col = 0; col < 7; col++) {
+                // col 0 = Sunday = rightmost in RTL
+                const cx = PAD + (6 - col) * (CELL_W + GAP) + CELL_W / 2;
+                ctx.font = `bold 12px ${FONT}`;
+                ctx.fillStyle = MUTED;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(HE_DOW[col], cx, y + DOW_HDR_H / 2);
+            }
+            y += DOW_HDR_H;
+
+            // Build byDay
+            const byDay = {};
+            mEntries.forEach(e => {
+                const p = parseExamDate(e.exam.date);
+                if (p) (byDay[p.day] = byDay[p.day] || []).push(e);
+            });
+
+            const startCol    = new Date(yr, mo, 1).getDay();
+            const daysInMonth = new Date(yr, mo + 1, 0).getDate();
+
+            let col = startCol;
+            let row = 0;
+            let rowY = y;
+
+            for (let d = 1; d <= daysInMonth; d++) {
+                const rh      = rowHeights[row];
+                const dayEntries = byDay[d] || [];
+                const dowIdx  = col; // 0=Sun … 6=Sat
+                const isShabbat = dowIdx === 6;
+
+                // Cell x: RTL — col 0 (Sunday) is rightmost
+                const cx = PAD + (6 - col) * (CELL_W + GAP);
+
+                // Cell background
+                const dateStr = `${String(d).padStart(2,'0')}/${String(mo+1).padStart(2,'0')}/${yr}`;
+                const hasOverlap = overlapDates.has(dateStr) && dayEntries.some(e => e.enrolled);
+
+                let cellBg = BGALT;
+                if (dayEntries.length > 0) cellBg = CARD;
+                if (isShabbat) cellBg = BG;
+
+                ctx.globalAlpha = isShabbat ? 0.7 : 1;
+                _examRRect(ctx, cx, rowY, CELL_W, rh, 6);
+                ctx.fillStyle = cellBg;
+                ctx.fill();
+                if (hasOverlap) {
+                    ctx.fillStyle = dark ? 'rgba(255,213,79,0.12)' : 'rgba(255,213,79,0.25)';
+                    _examRRect(ctx, cx, rowY, CELL_W, rh, 6);
+                    ctx.fill();
+                }
+                ctx.strokeStyle = BORDER;
+                ctx.lineWidth   = 1;
+                _examRRect(ctx, cx, rowY, CELL_W, rh, 6);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+
+                // Day number
+                ctx.font = `bold 12px ${FONT}`;
+                ctx.fillStyle = TEXT;
+                ctx.textAlign  = 'right';
+                ctx.textBaseline = 'top';
+                ctx.fillText(String(d) + (hasOverlap ? ' ⚠️' : ''), cx + CELL_W - 5, rowY + 3);
+
+                // Exam cards
+                let cardY = rowY + 22;
+                dayEntries.forEach(entry => {
+                    const moedClass = getMoedClass(entry.exam.type);
+                    const moedLabel = (entry.exam.type || '').replace('מועד ', '');
+                    const unchosen  = !entry.enrolled;
+
+                    ctx.globalAlpha = unchosen ? 0.5 : 1;
+
+                    // Card background: color-mix(course bg 18%, card) when enrolled
+                    let cardBgColor = BGALT;
+                    if (!unchosen) {
+                        // Approximate the CSS color-mix by blending entry.bg at 18% over CARD
+                        cardBgColor = _blendHex(entry.bg, CARD, 0.18);
+                    }
+                    const accentColor = unchosen ? BORDER : entry.border;
+
+                    const cardH = measureCardH(entry);
+                    const cardX = cx + 3 + 1; // 1px gap after accent border
+                    const cardW = CELL_W - 3 - 4; // 3px accent + 1px right gap
+
+                    // Card fill
+                    _examRRect(ctx, cardX, cardY, cardW, cardH, CARD_RADIUS);
+                    ctx.fillStyle = cardBgColor;
+                    ctx.fill();
+                    // Card border (thin, all sides except right which is overridden)
+                    _examRRect(ctx, cardX, cardY, cardW, cardH, CARD_RADIUS);
+                    ctx.strokeStyle = BORDER;
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                    // Right accent bar (3px, course colour)
+                    ctx.fillStyle = accentColor;
+                    _examRRect(ctx, cx + 1, cardY, 3, cardH, 3);
+                    ctx.fill();
+
+                    // Top row: time (left in RTL = right side of card visually) + moed badge
+                    const topRowY  = cardY + CARD_PAD_H;
+                    const badgeColors = _moedBadgeColors(moedClass, dark);
+                    ctx.font = `bold 9px ${FONT}`;
+                    const badgeTw  = ctx.measureText(moedLabel).width;
+                    const badgeW   = badgeTw + 10;
+                    const badgeX   = cardX + CARD_PAD_V;
+                    // badge pill
+                    _examRRect(ctx, badgeX, topRowY, badgeW, BADGE_H, BADGE_H / 2);
+                    ctx.fillStyle = badgeColors.bg; ctx.fill();
+                    ctx.strokeStyle = badgeColors.border; ctx.lineWidth = 1; ctx.stroke();
+                    ctx.fillStyle = badgeColors.text;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(moedLabel, badgeX + badgeW / 2, topRowY + BADGE_H / 2);
+
+                    // Time (muted, right side of top row)
+                    if (entry.exam.time) {
+                        ctx.font = `10px ${FONT}`;
+                        ctx.fillStyle = unchosen ? MUTED : MUTED;
+                        ctx.textAlign = 'right';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillText(entry.exam.time, cardX + cardW - CARD_PAD_V, topRowY + BADGE_H / 2);
+                    }
+
+                    // Course name (bold, may wrap)
+                    const nameY   = topRowY + BADGE_H + 3;
+                    const nameMaxW = cardW - CARD_PAD_V * 2;
+                    ctx.font = `bold 11px ${FONT}`;
+                    ctx.fillStyle = unchosen ? MUTED : TEXT;
+                    ctx.textAlign = 'right';
+                    ctx.textBaseline = 'top';
+                    // Word-wrap
+                    const words = entry.courseName.split(' ');
+                    let line = '', lineY = nameY;
+                    for (const w of words) {
+                        const test = line ? line + ' ' + w : w;
+                        if (ctx.measureText(test).width > nameMaxW && line) {
+                            ctx.fillText(line, cardX + cardW - CARD_PAD_V, lineY);
+                            lineY += CARD_LINE_H;
+                            line = w;
+                        } else { line = test; }
+                    }
+                    if (line) ctx.fillText(line, cardX + cardW - CARD_PAD_V, lineY);
+
+                    ctx.globalAlpha = 1;
+                    cardY += cardH + 2;
+                });
+
+                // Advance column/row
+                col++;
+                if (col === 7) {
+                    col = 0;
+                    rowY += rh + GAP;
+                    row++;
+                }
+            }
+
+            // Advance y past the last row
+            y = rowY + (rowHeights[row] ?? 0) + GAP + MONTH_GAP;
+        });
+
+        return canvas;
+    }
+
+    /**
+     * Blend hexColor over baseHex at alpha (0–1).
+     * Returns a CSS hex string.  Falls back to baseHex on parse failure.
+     */
+    function _blendHex(hexColor, baseHex, alpha) {
+        function parse(h) {
+            h = (h || '').trim().replace('#','');
+            if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+            const n = parseInt(h, 16);
+            return isNaN(n) ? null : [n>>16&255, n>>8&255, n&255];
+        }
+        const c = parse(hexColor), b = parse(baseHex);
+        if (!c || !b) return baseHex;
+        const r = Math.round(c[0]*alpha + b[0]*(1-alpha));
+        const g = Math.round(c[1]*alpha + b[1]*(1-alpha));
+        const bl= Math.round(c[2]*alpha + b[2]*(1-alpha));
+        return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${bl.toString(16).padStart(2,'0')}`;
+    }
+
+    function exportExamsPNG() {
+        const canvas = buildExamsCanvas();
+        if (!canvas) return alert('אין תוכן לייצא.');
+        const link = document.createElement('a');
+        link.download = 'exam_schedule.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
     }
 
     function exportExamsPDF() {
-        const content = document.getElementById('examsCalendarContent');
-        if (!content) return alert('אין תוכן לייצא.');
-        ensureHtml2canvas().then(() => {
-            const bg = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
-            return html2canvas(content, { backgroundColor: bg, scale: 2 });
-        }).then(canvas => {
-            if (typeof window.jspdf === 'undefined') {
-                const script = document.createElement('script');
-                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-                script.onload = () => finishExamPDF(canvas);
-                document.head.appendChild(script);
-            } else {
-                finishExamPDF(canvas);
-            }
-        }).catch(() => alert('שגיאה בייצוא PDF.'));
-    }
+        const canvas = buildExamsCanvas();
+        if (!canvas) return alert('אין תוכן לייצא.');
 
-    function finishExamPDF(canvas) {
-        const { jsPDF } = window.jspdf;
-        const w = canvas.width / 2, h = canvas.height / 2;
-        const pdf = new jsPDF({ orientation: w > h ? 'landscape' : 'portrait', unit: 'px', format: [w, h] });
-        pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, w, h);
-        pdf.save('exam_schedule.pdf');
+        function run() {
+            try {
+                const { jsPDF } = window.jspdf;
+                // Each "page" in the PDF is A4 landscape.  We slice the tall canvas
+                // into page-sized strips so the PDF has multiple pages rather than
+                // one enormous unreadable page.
+                const A4_W_MM  = 297, A4_H_MM  = 210;   // landscape A4
+                const A4_W_PX  = canvas.width  / 2;      // logical px (canvas drawn @2×)
+                const PAGE_H_PX= Math.round(A4_W_PX * A4_H_MM / A4_W_MM);
+
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+                let sliceY = 0;
+
+                while (sliceY < canvas.height / 2) {
+                    if (sliceY > 0) pdf.addPage('a4', 'landscape');
+
+                    // Draw this slice onto a temporary canvas
+                    const sliceH = Math.min(PAGE_H_PX, canvas.height / 2 - sliceY);
+                    const tmp = document.createElement('canvas');
+                    tmp.width  = canvas.width;
+                    tmp.height = sliceH * 2;
+                    const tctx = tmp.getContext('2d');
+                    tctx.drawImage(canvas, 0, sliceY * 2, canvas.width, sliceH * 2,
+                                           0, 0, canvas.width, sliceH * 2);
+
+                    pdf.addImage(tmp.toDataURL('image/jpeg', 0.92), 'JPEG',
+                                 0, 0, A4_W_MM, (sliceH / A4_W_PX) * A4_W_MM);
+                    sliceY += PAGE_H_PX;
+                }
+                pdf.save('exam_schedule.pdf');
+            } catch (e) {
+                console.error(e);
+                alert('שגיאה בייצוא PDF.');
+            }
+        }
+
+        if (typeof window.jspdf !== 'undefined') {
+            run();
+        } else {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+            script.onload = run;
+            script.onerror = () => alert('לא ניתן לטעון ספריית PDF. נסו לייצא כ-PNG.');
+            document.head.appendChild(script);
+        }
     }
 
     function exportExamsICS() {
@@ -3275,71 +3753,272 @@
         downloadAnchorNode.remove();
     }
 
-    // Loads html2canvas from the CDN on first use (same URL the PDF export uses).
-    function ensureHtml2canvas() {
-        if (typeof html2canvas !== 'undefined') return Promise.resolve();
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load html2canvas'));
-            document.head.appendChild(script);
+    // =====================================================================
+    // Native Canvas export — no external libraries needed.
+    // Draws the schedule grid directly using the Canvas 2D API, reading the
+    // same data (rawCourses / validSchedules / getCourseStyle) that the live
+    // DOM renderer uses.  Produces a pixel-identical result without needing
+    // html2canvas (which requires a CDN load and is fragile).
+    // =====================================================================
+
+    function buildScheduleCanvas() {
+        const currentSem  = getCurrentSemester();
+        const currentIdx  = semesterIndices[currentSem] || 0;
+        const schedule    = validSchedules[currentIdx] || [];
+
+        // Collect timed entries for this semester
+        const entries = schedule.filter(c => c.day && c.start && c.end);
+
+        // Determine time range (same logic as renderCalendar)
+        let minHour = 24, maxHour = 0;
+        if (entries.length === 0) { minHour = 8; maxHour = 20; }
+        else {
+            entries.forEach(c => {
+                const sh = parseInt(c.start.split(':')[0]);
+                const eh = Math.ceil(timeToMins(c.end) / 60);
+                if (sh < minHour) minHour = sh;
+                if (eh > maxHour) maxHour = eh;
+            });
+            minHour = Math.max(0, minHour - 1);
+            maxHour = Math.min(24, maxHour + 1);
+        }
+
+        // Which days are actually used?
+        const usedDays = new Set(entries.map(c => c.day));
+        const allDays  = DAY_LETTERS.filter(d => d !== 'ו' || usedDays.has('ו'));
+        const dayLabels = { 'א': "ראשון", 'ב': "שני", 'ג': "שלישי", 'ד': "רביעי", 'ה': "חמישי", 'ו': "שישי" };
+
+        // Layout constants (all in px, @2× for retina)
+        const SCALE      = 2;
+        const HOUR_PX    = 50 * SCALE;
+        const TIME_W     = 56 * SCALE;
+        const HDR_H      = 36 * SCALE;
+        const BODY_H     = (maxHour - minHour) * HOUR_PX;
+        const DAY_W      = Math.round(160 * SCALE);
+        const TOTAL_W    = TIME_W + allDays.length * DAY_W;
+        const TOTAL_H    = HDR_H + BODY_H;
+        const CELL_PAD   = 4 * SCALE;
+        const RADIUS     = 5 * SCALE;
+
+        // Read CSS theme vars from the live document
+        const cs         = getComputedStyle(document.documentElement);
+        const BG_CARD    = cs.getPropertyValue('--card').trim()    || '#ffffff';
+        const BG_ALT     = cs.getPropertyValue('--bg-alt').trim()  || '#f8f9fa';
+        const CLR_BORDER = cs.getPropertyValue('--border').trim()  || '#e1e4e8';
+        const CLR_TEXT   = cs.getPropertyValue('--text-main').trim()  || '#333333';
+        const CLR_MUTED  = cs.getPropertyValue('--text-muted').trim() || '#666666';
+        const FONT       = `${12 * SCALE}px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif`;
+        const FONT_SM    = `${10 * SCALE}px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif`;
+        const FONT_HDR   = `bold ${12 * SCALE}px "Segoe UI", Tahoma, Geneva, Verdana, sans-serif`;
+
+        const canvas = document.createElement('canvas');
+        canvas.width  = TOTAL_W;
+        canvas.height = TOTAL_H;
+        const ctx = canvas.getContext('2d');
+
+        // --- Background ---
+        ctx.fillStyle = BG_CARD;
+        ctx.fillRect(0, 0, TOTAL_W, TOTAL_H);
+
+        // --- Header row ---
+        ctx.fillStyle = BG_ALT;
+        ctx.fillRect(0, 0, TOTAL_W, HDR_H);
+        ctx.fillStyle = CLR_BORDER;
+        ctx.fillRect(0, HDR_H - SCALE, TOTAL_W, SCALE);  // bottom border
+
+        ctx.fillStyle = CLR_TEXT;
+        ctx.font = FONT_HDR;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // "שעה" header in time column
+        ctx.fillText('שעה', TIME_W / 2, HDR_H / 2);
+
+        // Day headers
+        allDays.forEach((d, i) => {
+            const x = TIME_W + i * DAY_W;
+            ctx.fillStyle = CLR_BORDER;
+            ctx.fillRect(x, 0, SCALE, HDR_H);       // left border
+            ctx.fillStyle = CLR_TEXT;
+            ctx.font = FONT_HDR;
+            ctx.fillText(dayLabels[d] || d, x + DAY_W / 2, HDR_H / 2);
         });
-    }
 
-    // Renders the calendar to a canvas the way every image export wants it:
-    // per-box action buttons hidden, `.exporting` styling on, and both put
-    // back afterwards whether the capture worked or not.
-    function captureCalendarCanvas(calendar) {
-        const actions = document.querySelectorAll('.box-actions');
-        actions.forEach(a => a.style.display = 'none');
-        calendar.classList.add('exporting');
+        // --- Time column + hour grid lines ---
+        ctx.fillStyle = BG_ALT;
+        ctx.fillRect(0, HDR_H, TIME_W, BODY_H);
+        ctx.fillStyle = CLR_BORDER;
+        ctx.fillRect(TIME_W - SCALE, HDR_H, SCALE, BODY_H); // right border of time col
 
-        const bgColor = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
-        const restore = () => {
-            calendar.classList.remove('exporting');
-            actions.forEach(a => a.style.display = 'flex');
-        };
+        for (let h = minHour; h < maxHour; h++) {
+            const y = HDR_H + (h - minHour) * HOUR_PX;
+            // Hour grid line across body
+            ctx.fillStyle = CLR_BORDER;
+            ctx.fillRect(TIME_W, y, TOTAL_W - TIME_W, SCALE);
+            // Hour label
+            ctx.fillStyle = CLR_MUTED;
+            ctx.font = FONT_SM;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+            ctx.fillText(`${h}:00`, TIME_W / 2, y + 4 * SCALE);
+        }
 
-        return html2canvas(calendar, {
-            backgroundColor: bgColor,
-            scale: 2
-        }).then(canvas => {
-            restore();
-            return canvas;
-        }, err => {
-            restore();
-            throw err;
+        // Vertical day separators in body
+        allDays.forEach((_, i) => {
+            const x = TIME_W + i * DAY_W;
+            ctx.fillStyle = CLR_BORDER;
+            ctx.fillRect(x, HDR_H, SCALE, BODY_H);
         });
+
+        // --- Helper: rounded rect ---
+        function roundRect(x, y, w, h, r) {
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + w - r, y);
+            ctx.arcTo(x + w, y,     x + w, y + r,     r);
+            ctx.lineTo(x + w, y + h - r);
+            ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+            ctx.lineTo(x + r, y + h);
+            ctx.arcTo(x,     y + h, x,     y + h - r, r);
+            ctx.lineTo(x, y + r);
+            ctx.arcTo(x,     y,     x + r, y,         r);
+            ctx.closePath();
+        }
+
+        // --- Helper: wrap text RTL ---
+        function drawWrappedText(text, cx, cy, maxW, lineH, maxLines, color, font) {
+            ctx.font = font;
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'top';
+
+            // Split into words and reflow — canvas measureText works fine for Hebrew
+            const words = text.split(' ');
+            const lines = [];
+            let cur = '';
+            for (const w of words) {
+                const test = cur ? cur + ' ' + w : w;
+                if (ctx.measureText(test).width > maxW && cur) {
+                    lines.push(cur);
+                    cur = w;
+                } else {
+                    cur = test;
+                }
+            }
+            if (cur) lines.push(cur);
+
+            const slice = lines.slice(0, maxLines);
+            const totalH = slice.length * lineH;
+            const startY = cy - totalH / 2;
+            slice.forEach((line, i) => {
+                ctx.fillText(line, cx, startY + i * lineH, maxW);
+            });
+        }
+
+        // --- Course event blocks ---
+        // Group by day for overlap detection
+        const byDay = {};
+        allDays.forEach(d => { byDay[d] = []; });
+        entries.forEach(c => { if (byDay[c.day]) byDay[c.day].push(c); });
+
+        allDays.forEach((day, di) => {
+            const dayEntries = byDay[day].slice().sort((a, b) => timeToMins(a.start) - timeToMins(b.start));
+            if (!dayEntries.length) return;
+
+            // Simple column-packing (mirrors renderCalendar)
+            const cols = [];
+            dayEntries.forEach(ev => {
+                const s = timeToMins(ev.start);
+                let placed = false;
+                for (let ci = 0; ci < cols.length; ci++) {
+                    const lastEnd = timeToMins(cols[ci][cols[ci].length - 1].end);
+                    if (s >= lastEnd) { cols[ci].push(ev); ev._col = ci; placed = true; break; }
+                }
+                if (!placed) { ev._col = cols.length; cols.push([ev]); }
+            });
+            const numCols = cols.length;
+
+            dayEntries.forEach(ev => {
+                const colors  = getCourseStyle(ev.name, ev.type, ev.color);
+                const top     = HDR_H + (timeToMins(ev.start) - minHour * 60) / 60 * HOUR_PX;
+                const height  = (timeToMins(ev.end) - timeToMins(ev.start)) / 60 * HOUR_PX;
+                const colW    = DAY_W / numCols;
+                // RTL: columns run right-to-left within the day
+                const left    = TIME_W + di * DAY_W + (numCols - 1 - ev._col) * colW;
+                const bx      = left + CELL_PAD;
+                const by      = top + CELL_PAD;
+                const bw      = colW - CELL_PAD * 2;
+                const bh      = height - CELL_PAD * 2;
+
+                if (bw < 2 || bh < 2) return;
+
+                // Fill
+                roundRect(bx, by, bw, bh, RADIUS);
+                ctx.fillStyle = colors.bg;
+                ctx.fill();
+
+                // Border
+                roundRect(bx, by, bw, bh, RADIUS);
+                ctx.strokeStyle = colors.border;
+                ctx.lineWidth = 2 * SCALE;
+                ctx.stroke();
+
+                // Text
+                const textColor = colors.text;
+                const cx = bx + bw / 2;
+                const lineH = 14 * SCALE;
+                const maxW  = bw - CELL_PAD * 2;
+
+                if (bh >= 28 * SCALE) {
+                    // Course name (bold)
+                    drawWrappedText(ev.name, cx, by + bh * 0.38, maxW, lineH, bh > 60 * SCALE ? 3 : 2, textColor, `bold ${11 * SCALE}px "Segoe UI", Tahoma, sans-serif`);
+                    // Time
+                    if (bh >= 40 * SCALE) {
+                        ctx.font = FONT_SM;
+                        ctx.fillStyle = textColor;
+                        ctx.globalAlpha = 0.8;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'bottom';
+                        ctx.fillText(`${ev.start}–${ev.end}`, cx, by + bh - CELL_PAD, maxW);
+                        ctx.globalAlpha = 1;
+                    }
+                } else {
+                    // Micro block — just the name, single line
+                    ctx.font = `bold ${9 * SCALE}px "Segoe UI", Tahoma, sans-serif`;
+                    ctx.fillStyle = textColor;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(ev.name, cx, by + bh / 2, maxW);
+                }
+            });
+        });
+
+        return canvas;
     }
 
     function exportToImage(format) {
-        const calendar = document.querySelector('.calendar-wrapper');
-        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
+        const currentSem = getCurrentSemester();
+        const hasCourses = rawCourses.some(c => c.semester === currentSem || c.semester === 'שנתי');
+        if (!hasCourses) return alert("אין מערכת לייצא כרגע.");
 
-        ensureHtml2canvas()
-            .then(() => runImageCapture(calendar, format))
-            .catch(() => alert("אירעה שגיאה בייצוא התמונה."));
-    }
-
-    function runImageCapture(calendar, format) {
-        return captureCalendarCanvas(calendar).then(canvas => {
+        try {
+            const canvas = buildScheduleCanvas();
             const link = document.createElement('a');
-            link.download = `Schedule_${getCurrentSemester()}.${format}`;
-            link.href = canvas.toDataURL(`image/${format}`);
+            link.download = `Schedule_${currentSem}.${format}`;
+            link.href = canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png', 0.97);
             link.click();
-        }).catch(err => {
+        } catch (err) {
+            console.error('Export error:', err);
             alert("אירעה שגיאה בייצוא התמונה.");
-        });
+        }
     }
 
-    // Same picture as the PNG export, but put on the clipboard instead of
-    // downloaded. The clipboard only reliably takes PNG, so there's no JPG
-    // variant. Needs a secure context (https or localhost) and a browser that
-    // supports ClipboardItem (Chrome/Edge/Safari; Firefox 127+).
+    // Same picture as PNG export, but written to the clipboard.
+    // Uses the same native canvas renderer — no CDN dependency.
     function exportToClipboard() {
-        const calendar = document.querySelector('.calendar-wrapper');
-        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
+        const currentSem = getCurrentSemester();
+        const hasCourses = rawCourses.some(c => c.semester === currentSem || c.semester === 'שנתי');
+        if (!hasCourses) return alert("אין מערכת לייצא כרגע.");
 
         if (!window.isSecureContext || !navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === 'undefined') {
             return alert("הדפדפן לא תומך בהעתקת תמונה ללוח (נדרש דפדפן עדכני ואתר מאובטח).\nאפשר להשתמש בייצוא כתמונה (PNG) במקום.");
@@ -3347,20 +4026,15 @@
 
         showToast('מכין תמונה…', 15000);
 
-        // The image takes a moment to render, and Safari only lets
-        // clipboard.write() run inside the click that started it — so the
-        // ClipboardItem is created right now, holding a *promise* of the
-        // PNG, and the browser waits for it.
-        const pngBlobPromise = ensureHtml2canvas()
-            .then(() => captureCalendarCanvas(calendar))
-            .then(canvas => new Promise((resolve, reject) => {
-                canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('canvas.toBlob returned null')), 'image/png');
-            }));
+        // Build immediately (sync) so the ClipboardItem is created inside the
+        // click gesture — Safari requires this.
+        let canvas;
+        try { canvas = buildScheduleCanvas(); }
+        catch (err) { showToast(''); alert("אירעה שגיאה בייצוא."); return; }
 
-        // The clipboard call below reports a failed render to the user; this
-        // no-op branch just stops the browser also logging it as an
-        // "unhandled rejection" (the ClipboardItem consumes the promise
-        // internally, which JS can't see).
+        const pngBlobPromise = new Promise((resolve, reject) =>
+            canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/png')
+        );
         pngBlobPromise.catch(() => {});
 
         navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlobPromise })])
@@ -3413,7 +4087,7 @@
             const selection = window.getSelection ? window.getSelection().toString() : '';
             if (selection) return;   // the person is copying text
             if (!canCopyScheduleImage()) return;
-            if (validSchedules.length === 0 || currentSemesterState().courses.length === 0) return;
+            if (currentSemesterState().courses.length === 0) return;
             e.preventDefault();
             exportToClipboard();
             return;
@@ -3450,59 +4124,36 @@
     }
 
     function exportToPDF() {
-        const calendar = document.querySelector('.calendar-wrapper');
-        if (!calendar || validSchedules.length === 0) return alert("אין מערכת לייצא כרגע.");
-        
-        if (typeof html2canvas === 'undefined') {
-            const script1 = document.createElement('script');
-            script1.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-            document.head.appendChild(script1);
-            script1.onload = checkJSPDF;
-        } else {
-            checkJSPDF();
-        }
+        const currentSem = getCurrentSemester();
+        const hasCourses = rawCourses.some(c => c.semester === currentSem || c.semester === 'שנתי');
+        if (!hasCourses) return alert("אין מערכת לייצא כרגע.");
 
-        function checkJSPDF() {
-            if (typeof window.jspdf === 'undefined') {
-                const script2 = document.createElement('script');
-                script2.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-                script2.onload = () => runPDFCapture(calendar);
-                document.head.appendChild(script2);
-            } else {
-                runPDFCapture(calendar);
+        let canvas;
+        try { canvas = buildScheduleCanvas(); }
+        catch (err) { alert("אירעה שגיאה בייצוא."); return; }
+
+        function runWithJsPDF() {
+            try {
+                const imgData = canvas.toDataURL('image/jpeg', 0.97);
+                const w = canvas.width / 2, h = canvas.height / 2;
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF({ orientation: w > h ? 'landscape' : 'portrait', unit: 'px', format: [w, h] });
+                pdf.addImage(imgData, 'JPEG', 0, 0, w, h);
+                pdf.save(`Schedule_${currentSem}.pdf`);
+            } catch (err) {
+                alert("אירעה שגיאה בייצור מסמך PDF.");
             }
         }
-    }
 
-    function runPDFCapture(calendar) {
-        const actions = document.querySelectorAll('.box-actions');
-        actions.forEach(a => a.style.display = 'none');
-        calendar.classList.add('exporting');
-        
-        const bgColor = getComputedStyle(document.body).getPropertyValue('--card').trim() || '#ffffff';
-
-        html2canvas(calendar, { 
-            backgroundColor: bgColor,
-            scale: 2 
-        }).then(canvas => {
-            calendar.classList.remove('exporting');
-            actions.forEach(a => a.style.display = 'flex');
-            
-            const imgData = canvas.toDataURL('image/jpeg', 0.98);
-            const width = canvas.width / 2; 
-            const height = canvas.height / 2;
-            
-            const { jsPDF } = window.jspdf;
-            const pdf = new jsPDF({ orientation: width > height ? 'landscape' : 'portrait', unit: 'px', format: [width, height] });
-            
-            pdf.addImage(imgData, 'JPEG', 0, 0, width, height);
-            pdf.save(`Schedule_${getCurrentSemester()}.pdf`);
-            
-        }).catch(err => {
-            calendar.classList.remove('exporting');
-            actions.forEach(a => a.style.display = 'flex');
-            alert("אירעה שגיאה בייצור מסמך PDF.");
-        });
+        if (typeof window.jspdf !== 'undefined') {
+            runWithJsPDF();
+        } else {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+            script.onload = runWithJsPDF;
+            script.onerror = () => alert("לא ניתן לטעון את ספריית ה-PDF. ודאו שיש חיבור לאינטרנט ונסו שוב, או השתמשו בייצוא PNG.");
+            document.head.appendChild(script);
+        }
     }
 
     // --- Parser Engine ---
