@@ -593,6 +593,22 @@
             .join('|');
     }
 
+    // Folds one source group's clusters / remark / Shoham + syllabus links into a
+    // merged entry (see getMergedGroups). Duplicates are skipped.
+    function absorbGroupMeta(entry, g, lecturer, code) {
+        (Array.isArray(g.clusters) ? g.clusters : []).forEach((c) => {
+            if (c && !entry.clusters.includes(c)) entry.clusters.push(c);
+        });
+        const remark = (g.remark || '').trim();
+        if (remark && !entry.remarks.includes(remark)) entry.remarks.push(remark);
+        if (g.shoamId || g.syllabus) {
+            const shoamId = g.shoamId || null;
+            const syllabus = g.syllabus || null;
+            const dup = entry.links.some((l) => l.shoamId === shoamId && l.syllabus === syllabus);
+            if (!dup) entry.links.push({ groupCode: code, lecturerName: lecturer, shoamId, syllabus });
+        }
+    }
+
     function getMergedGroups(course) {
         if (!course || !Array.isArray(course.groups)) return [];
         if (course.__mergedGroups) return course.__mergedGroups;
@@ -614,6 +630,7 @@
                 existing.mergedIds.push(g.id);
                 if (lecturer && !existing.lecturerNames.includes(lecturer)) existing.lecturerNames.push(lecturer);
                 if (code && !existing.groupCodes.includes(code)) existing.groupCodes.push(code);
+                absorbGroupMeta(existing, g, lecturer, code);
                 continue;
             }
 
@@ -621,7 +638,11 @@
                 mergedIds: [g.id],
                 lecturerNames: lecturer ? [lecturer] : [],
                 groupCodes: code ? [code] : [],
+                clusters: [],
+                remarks: [],
+                links: [],
             });
+            absorbGroupMeta(entry, g, lecturer, code);
             merged.push(entry);
             if (key) byKey.set(key, entry);
         }
@@ -629,6 +650,18 @@
         merged.forEach((e) => {
             e.lecturerName = e.lecturerNames.join('/');
             e.groupCode = e.groupCodes.join('/');
+            // Merged metadata (nothing from the combined groups is dropped):
+            //  - clusters: de-duplicated union
+            //  - remark:   distinct remarks joined with " | " (single remark if they agree)
+            //  - shoamIds / syllabi: every distinct id / link; shoamId / syllabus keep the
+            //    first one for callers that only read a single value
+            //  - links: per-group { groupCode, lecturerName, shoamId, syllabus } so each
+            //    lecturer/group can be tied to its own link
+            e.remark = e.remarks.join(' | ');
+            e.shoamIds = [...new Set(e.links.map((l) => l.shoamId).filter(Boolean))];
+            e.syllabi = [...new Set(e.links.map((l) => l.syllabus).filter(Boolean))];
+            if (e.shoamIds.length) e.shoamId = e.shoamIds[0];
+            if (e.syllabi.length) e.syllabus = e.syllabi[0];
         });
 
         // Non-enumerable so it never leaks into anything that serializes the
@@ -660,11 +693,23 @@
 
     let currentSearchAddCourse = null; // set by renderSearchAddDialog, read by toggleGroupInSchedule
 
+    function escapeHtml(str) {
+        return String(str).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
     function renderSearchAddDialog(course) {
         currentSearchAddCourse = course;
         document.getElementById('searchAddTitle').innerText = course.nameHe;
         const creditsDisplay = Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1));
-        document.getElementById('searchAddMeta').innerHTML = `${course.courseCode} · ${creditsDisplay} נ"ז`;
+        // Meta line: code · credits, then optional faculty / English name and syllabus link.
+        // Catalog strings go through innerHTML, so escape them first.
+        let metaHtml = `${course.courseCode} · ${creditsDisplay} נ"ז`;
+        if (course.facultyNameHe) metaHtml += ` · ${escapeHtml(course.facultyNameHe)}`;
+        if (course.englishName) metaHtml += ` · ${escapeHtml(course.englishName)}`;
+        if (course.syllabus) {
+            metaHtml += ` <a href="https://courses.biu.ac.il/${course.syllabus}" target="_blank" rel="noopener" style="font-size:12px; color:var(--primary); text-decoration:none; margin-right:8px;">סילבוס קורס ↗</a>`;
+        }
+        document.getElementById('searchAddMeta').innerHTML = metaHtml;
         document.getElementById('searchAddManualEditBtn').style.display = manualEditFallbackId ? 'inline-block' : 'none';
 
         // Reflect this course's ACTUAL current elective state (electives are
@@ -706,23 +751,6 @@
             (bySemester[g.semester] = bySemester[g.semester] || []).push(g);
         }
 
-        // Derive shoam ids per-semester directly from course.groups — the course
-        // object is always freshly fetched, so this is always correct regardless of
-        // what localStorage may have cached from a previous session.
-        // Stored shoamIdBySemester is intentionally NOT used here: it can be stale
-        // (e.g. both semesters pointing to the top-level id before per-group ids were
-        // introduced) and would override correct per-group data.
-        const shoamIdBySem = {};
-        (course.groups || []).forEach(g => {
-            if (!g.shoamId) return;
-            const sems = g.semester === 'annual' ? ['a', 'b'] : [g.semester];
-            sems.forEach(s => { if (s && !shoamIdBySem[s]) shoamIdBySem[s] = g.shoamId; });
-        });
-        // Fallback for courses that only carry a single top-level shoamId (old format).
-        if (Object.keys(shoamIdBySem).length === 0 && course.shoamId) {
-            Object.keys(bySemester).forEach(s => { shoamIdBySem[s] = course.shoamId; });
-        }
-
         return SEMESTER_LIST_ORDER.filter((sem) => bySemester[sem] && bySemester[sem].length).map((sem) => {
             const groupsByType = {};
             bySemester[sem].forEach((g) => { (groupsByType[g.type] = groupsByType[g.type] || []).push(g); });
@@ -743,13 +771,39 @@
                         .filter((m) => DAY_LETTERS[m.dayOfWeek])
                         .map((m) => `יום ${DAY_LETTERS[m.dayOfWeek]}' ${formatMinutesToTime(m.startMinutes)}-${formatMinutesToTime(m.endMinutes)}`)
                         .join(', ');
+                    // Cluster chips next to the group code; remark under the time string.
+                    const clusterBadges = Array.isArray(g.clusters) && g.clusters.length
+                        ? ' ' + g.clusters.map((c) => `<span class="cluster-badge">${escapeHtml(c)}</span>`).join(' ')
+                        : '';
+                    const remarkHtml = g.remark
+                        ? `<div class="group-remark">⚠️ ${escapeHtml(g.remark)}</div>`
+                        : '';
+                    // External links — one שוהם / סילבוס pair per distinct source group.
+                    // When a merged row has several, each is tagged with its group code
+                    // and carries the lecturer's name as a tooltip.
+                    const links = g.links || [];
+                    const multi = links.length > 1;
+                    const linksHtml = links.map((l) => {
+                        const tag = multi && l.groupCode ? ` (${escapeHtml(l.groupCode)})` : '';
+                        const title = multi && l.lecturerName ? ` title="${escapeHtml(l.lecturerName)}"` : '';
+                        const shoam = l.shoamId
+                            ? `<a class="group-link"${title} href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${l.shoamId}" target="_blank" rel="noopener">שוהם${tag} ↗</a>`
+                            : '';
+                        const syl = l.syllabus
+                            ? `<a class="group-link"${title} href="https://courses.biu.ac.il/${l.syllabus}" target="_blank" rel="noopener">סילבוס${tag} ↗</a>`
+                            : '';
+                        return shoam + syl;
+                    }).join('');
+                    const linksBlock = linksHtml ? `<span class="group-links">${linksHtml}</span>` : '';
                     return `
                         <div class="group-row ${added ? 'added' : ''}">
-                            <div>
-                                <div><strong>קבוצה ${g.groupCode}</strong> — ${g.lecturerName || ''}</div>
+                            <div class="group-row-info">
+                                <div><strong>קבוצה ${g.groupCode}</strong>${clusterBadges} — ${g.lecturerName || ''}</div>
                                 <div style="color:var(--text-muted); font-size:12px;" dir="ltr">${times || '(ללא שעות)'}</div>
+                                ${remarkHtml}
+                                ${linksBlock}
                             </div>
-                            <button class="btn-simple" style="padding:6px 12px; font-size:13px;"
+                            <button class="btn-simple group-toggle-btn" style="padding:6px 12px; font-size:13px;"
                                     onclick="toggleGroupInSchedule('${g.id}', false, true)">
                                 ${added ? 'הסרה' : 'הוספה'}
                             </button>
@@ -775,21 +829,10 @@
                         onclick="addAllGroupsForCourseInSemester('${sem}')"
                         title="הוסף את כל הקבוצות של הקורס בסמסטר ${SEMESTER_MAP[sem] || sem}">הוסף הכל</button>`;
 
-            // Per-semester שוהם link — shown only when the catalog provides one
-            // for this exact semester (never falls back to a different semester's id).
-            const semShoamId = shoamIdBySem[sem] || null;
-            const semShoamLink = semShoamId
-                ? `<a href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${semShoamId}" target="_blank" rel="noopener"
-                      style="font-size:12px; color:var(--primary); text-decoration:none; margin-right:8px;" title="פתח בשוהם">שוהם ↗</a>`
-                : '';
-
             return `
                 <div class="semester-section">
                     <div class="semester-section-header">
-                        <div style="display:flex; align-items:center; gap:8px;">
-                            <h3>${SEMESTER_MAP[sem] || sem}</h3>
-                            ${semShoamLink}
-                        </div>
+                        <h3>${SEMESTER_MAP[sem] || sem}</h3>
                         ${addAllBtnHtml}
                     </div>
                     ${typeSections}
@@ -3800,6 +3843,21 @@
         const CELL_PAD   = 4 * SCALE;
         const RADIUS     = 5 * SCALE;
 
+        // RTL layout: time column is on the RIGHT, days run left→right as
+        // Thursday … Sunday (so Sunday ends up on the far right, matching
+        // the live RTL HTML calendar).
+        // dayColX(di) returns the left edge of day-column at logical index di
+        // (di=0 → ראשון/Sunday, rightmost; di=N-1 → leftmost day).
+        const NUM_DAYS   = allDays.length;
+        const DAYS_TOTAL = NUM_DAYS * DAY_W;          // total width of the day area
+        // Time column sits at the far right.
+        const TIME_X     = DAYS_TOTAL;                // left edge of the time column
+        function dayColX(di) {
+            // Reverse: logical index 0 (Sunday) → rightmost day slot.
+            // Rightmost day slot starts at DAYS_TOTAL - DAY_W.
+            return (NUM_DAYS - 1 - di) * DAY_W;
+        }
+
         // Read CSS theme vars from the live document
         const cs         = getComputedStyle(document.documentElement);
         const BG_CARD    = cs.getPropertyValue('--card').trim()    || '#ffffff';
@@ -3831,44 +3889,48 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
-        // "שעה" header in time column
-        ctx.fillText('שעה', TIME_W / 2, HDR_H / 2);
+        // "שעה" header in time column (now on the right)
+        ctx.fillText('שעה', TIME_X + TIME_W / 2, HDR_H / 2);
 
-        // Day headers
+        // Day headers (RTL order: Sunday rightmost)
         allDays.forEach((d, i) => {
-            const x = TIME_W + i * DAY_W;
+            const x = dayColX(i);
             ctx.fillStyle = CLR_BORDER;
-            ctx.fillRect(x, 0, SCALE, HDR_H);       // left border
+            ctx.fillRect(x + DAY_W - SCALE, 0, SCALE, HDR_H); // right border of each day col
             ctx.fillStyle = CLR_TEXT;
             ctx.font = FONT_HDR;
             ctx.fillText(dayLabels[d] || d, x + DAY_W / 2, HDR_H / 2);
         });
+        // Left border of the leftmost day column
+        ctx.fillStyle = CLR_BORDER;
+        ctx.fillRect(0, 0, SCALE, HDR_H);
 
         // --- Time column + hour grid lines ---
         ctx.fillStyle = BG_ALT;
-        ctx.fillRect(0, HDR_H, TIME_W, BODY_H);
+        ctx.fillRect(TIME_X, HDR_H, TIME_W, BODY_H);
         ctx.fillStyle = CLR_BORDER;
-        ctx.fillRect(TIME_W - SCALE, HDR_H, SCALE, BODY_H); // right border of time col
+        ctx.fillRect(TIME_X, HDR_H, SCALE, BODY_H); // left border of time col
 
         for (let h = minHour; h < maxHour; h++) {
             const y = HDR_H + (h - minHour) * HOUR_PX;
-            // Hour grid line across body
+            // Hour grid line across the entire day area
             ctx.fillStyle = CLR_BORDER;
-            ctx.fillRect(TIME_W, y, TOTAL_W - TIME_W, SCALE);
+            ctx.fillRect(0, y, DAYS_TOTAL, SCALE);
             // Hour label
             ctx.fillStyle = CLR_MUTED;
             ctx.font = FONT_SM;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'top';
-            ctx.fillText(`${h}:00`, TIME_W / 2, y + 4 * SCALE);
+            ctx.fillText(`${h}:00`, TIME_X + TIME_W / 2, y + 4 * SCALE);
         }
 
         // Vertical day separators in body
         allDays.forEach((_, i) => {
-            const x = TIME_W + i * DAY_W;
+            const x = dayColX(i);
             ctx.fillStyle = CLR_BORDER;
-            ctx.fillRect(x, HDR_H, SCALE, BODY_H);
+            ctx.fillRect(x + DAY_W - SCALE, HDR_H, SCALE, BODY_H); // right border
         });
+        ctx.fillRect(0, HDR_H, SCALE, BODY_H); // left outer border
 
         // --- Helper: rounded rect ---
         function roundRect(x, y, w, h, r) {
@@ -3943,8 +4005,8 @@
                 const top     = HDR_H + (timeToMins(ev.start) - minHour * 60) / 60 * HOUR_PX;
                 const height  = (timeToMins(ev.end) - timeToMins(ev.start)) / 60 * HOUR_PX;
                 const colW    = DAY_W / numCols;
-                // RTL: columns run right-to-left within the day
-                const left    = TIME_W + di * DAY_W + (numCols - 1 - ev._col) * colW;
+                // RTL: day column X from the RTL helper; sub-columns also run RTL within the day
+                const left    = dayColX(di) + (numCols - 1 - ev._col) * colW;
                 const bx      = left + CELL_PAD;
                 const by      = top + CELL_PAD;
                 const bw      = colW - CELL_PAD * 2;

@@ -365,6 +365,27 @@
             border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 13px;
         }
         .group-row.added { border-color: var(--primary); background: rgba(74, 144, 226, 0.08); }
+        /* Row layout: [info column | toggle button]. The info column holds the name,
+           time, remark and the שוהם/סילבוס links (which wrap on their own line under
+           the text); the toggle button is a fixed-width item pinned to the far end, so
+           הוספה/הסרה sits in the same place on every row whatever the width. */
+        .group-row { align-items: flex-start; }
+        .group-row-info { flex: 1 1 auto; min-width: 0; }
+        .group-toggle-btn { flex: 0 0 auto; align-self: center; min-width: 64px; white-space: nowrap; text-align: center; }
+        .group-links { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+        .group-link {
+            display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px;
+            font-size: 12px; line-height: 1.5; color: var(--primary); text-decoration: none; white-space: nowrap;
+        }
+        .group-link:hover { background: rgba(74, 144, 226, 0.1); border-color: var(--primary); }
+        .cluster-badge {
+            display: inline-block; margin-inline-start: 4px; padding: 1px 8px; border-radius: 999px;
+            font-size: 11px; font-weight: 500; line-height: 1.5; vertical-align: middle;
+            color: var(--primary); background: rgba(74, 144, 226, 0.12); border: 1px solid rgba(74, 144, 226, 0.35);
+        }
+        .group-remark {
+            margin-top: 4px; font-size: 12px; line-height: 1.4; color: #b45309;
+        }
         .group-locked { opacity: 0.45; pointer-events: none; }
 
         .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
