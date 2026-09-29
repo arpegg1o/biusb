@@ -729,16 +729,24 @@
                would pick up the transparent value set on the parent above. */
             .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-content,
             .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-content {
+                /* Enlarged card, centred on the original block. It spans the
+                   WHOLE day column (--ext-left / --ext-right are set per block
+                   in app.js), so a block that was squeezed beside an overlapping
+                   one grows as if nothing overlapped it. The action buttons live
+                   inside this card (see markup), so they always sit at its own
+                   top-left corner, and the top padding keeps text clear of them. */
                 position: absolute;
-                top: 0;
-                right: 0;
-                left: 0;
-                min-width: 120px;
+                top: 50%;
+                left: calc(var(--ext-left, 0) * -1%);
+                right: calc(var(--ext-right, 0) * -1%);
+                min-width: 130px;
+                box-sizing: border-box;
+                transform: translateY(-50%);
                 min-height: 100%;
                 background: var(--event-bg, var(--card));
                 border: 2px solid var(--event-border-color, currentColor);
                 border-radius: 6px;
-                padding: 30px 6px 10px;
+                padding: 36px 6px 10px;
                 box-shadow: 0 6px 20px rgba(0,0,0,0.28);
                 z-index: 1;
             }
@@ -846,6 +854,11 @@
             font-weight: 600;
             line-height: 1.4;
         }
+        .timeless-chip.clickable { cursor: pointer; }
+        .timeless-chip.clickable:hover { filter: brightness(0.96); }
+        .timeless-chip.ghost { border-style: dashed; opacity: 0.75; }
+        .timeless-chip.dimmed { opacity: 0.45; }
+        .timeless-chip-icon { font-size: 11px; }
         .timeless-chip-type {
             font-size: 10px;
             font-weight: normal;

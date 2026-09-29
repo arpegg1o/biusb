@@ -1,10 +1,31 @@
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
+<!--
+  ============================== IMPORTANT ==============================
+  DO NOT DELETE THIS COMMENT.
+
+  Every time you change app.js or styles.css and upload the new version,
+  you MUST also change the "?v=" number in the <link> (styles.css) and
+  <script> (app.js) tags in THIS file (index.html), and upload index.html too.
+
+  Example:   app.js?v=20260929-4   ->   app.js?v=20260930-1
+
+  Why: browsers keep a saved copy of app.js / styles.css and reuse it.
+  They identify a file by its full address, so a new "?v=" value looks like a
+  brand-new file and forces every user's browser to download the update.
+  The file on the server is still just called app.js / styles.css - "?v=" is
+  only written here in index.html; never rename the real files.
+  The value can be anything, as long as it is different from the previous one
+  (date + counter is a good habit). If you forget, users may keep seeing
+  the old version for a while.
+  =======================================================================
+-->
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0">
     <title>מערכת שעות</title>
-    <link rel="stylesheet" href="styles.css?v=20260929-1">
+    <link rel="stylesheet" href="styles.css?v=20260929-3">
 </head>
 <body>
 
@@ -500,7 +521,7 @@
 <script src="vendor/uFuzzy.iife.min.js"></script>
 <!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
      files aggressively can keep serving an old app.js after an update. -->
-<script src="app.js?v=20260929-1"></script>
+<script src="app.js?v=20260929-4"></script>
 
 </body>
 </html>

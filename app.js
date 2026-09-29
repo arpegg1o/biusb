@@ -260,6 +260,15 @@
     }
     let activeAlternativeKey = null; 
     let scheduleWorker = null; 
+    // True when the solver hit its cap and is only showing the best N schedules.
+    let scheduleListTruncated = false;
+    // Set while waiting for a pinned solve (see jumpToAlternative()).
+    let pendingPinRequest = null;
+    // Every solver request is tagged; a response whose tag is no longer the
+    // latest is stale (the user has since changed something) and is dropped,
+    // so a slow older result can never undo what's on screen.
+    let latestSolveSeq = 0;
+    let silentRefreshTimer = null;
     let lastConflictDetails = null; 
     let pendingAlternativeJump = null; 
     let devModeAllowOverlaps = false; 
@@ -346,8 +355,8 @@
     async function loadCatalogIndex() {
         try {
             const [indexRes, deptRes] = await Promise.all([
-                fetch('data/search-index.json'),
-                fetch('data/departments.json'),
+                fetch('data/search-index.json', { cache: 'no-cache' }),
+                fetch('data/departments.json', { cache: 'no-cache' }),
             ]);
             catalogIndex = await indexRes.json();
             // The fuzzy-search haystack is built (and cached) separately —
@@ -369,7 +378,7 @@
 
     function fetchCourseDetail(id) {
         if (!courseDetailCache.has(id)) {
-            courseDetailCache.set(id, fetch(`data/courses/${id}.json`).then((r) => {
+            courseDetailCache.set(id, fetch(`data/courses/${id}.json`, { cache: 'no-cache' }).then((r) => {
                 if (!r.ok) throw new Error(`Failed to load course ${id}: ${r.status}`);
                 return r.json();
             }).then((course) => {
@@ -1207,6 +1216,72 @@
                     renderSearchAddDialog(currentSearchAddCourse);
                 }
             }).catch(() => { /* silently ignore network errors */ });
+        });
+    }
+
+
+    // =====================================================================
+    // Catalog re-sync
+    //
+    // Entries added from the catalog are stored in localStorage with the
+    // day/time frozen at the moment they were added. If the catalog data
+    // for that group was wrong then (or has since been corrected), the saved
+    // entries kept showing the old, wrong meetings forever — a hard refresh
+    // doesn't touch localStorage. On load, re-derive the meetings of every
+    // catalog-linked group from the freshly fetched course file whenever the
+    // saved entries no longer match it. Groups that no longer exist in the
+    // catalog file are left untouched.
+    // =====================================================================
+    function _syncCatalogEntries() {
+        console.info('[syncCatalog] build 20260929-3 running');
+        const courseIds = new Set();
+        rawCourses.forEach(c => {
+            const id = extractCourseIdFromGroupId(c.courseGroupId);
+            if (id) courseIds.add(id);
+        });
+        if (courseIds.size === 0) return;
+
+        Promise.all([...courseIds].map(id =>
+            fetchCourseDetail(id).catch(() => null)
+        )).then(courses => {
+            let changed = false;
+            courses.forEach(course => {
+                if (!course || !Array.isArray(course.groups)) return;
+                course.groups.forEach(group => {
+                    if (!group.meetings || group.meetings.length === 0) return; // timeless — nothing to compare
+                    const entries = rawCourses.filter(c => c.courseGroupId === group.id && !c.timeless);
+                    if (entries.length === 0) return;
+
+                    const want = group.meetings
+                        .filter(m => DAY_LETTERS[m.dayOfWeek])
+                        .map(m => `${DAY_LETTERS[m.dayOfWeek]}|${formatMinutesToTime(m.startMinutes)}|${formatMinutesToTime(m.endMinutes)}`);
+                    const have = entries.map(c => `${c.day}|${c.start}|${c.end}`);
+                    if (want.slice().sort().join(',') === have.slice().sort().join(',')) return;
+
+                    const first = entries[0];
+                    const firstIdx = rawCourses.indexOf(first);
+                    const fresh = group.meetings
+                        .filter(m => DAY_LETTERS[m.dayOfWeek])
+                        .map(m => ({
+                            id: Date.now() + Math.random().toString(36).substring(2, 8),
+                            courseGroupId: group.id,
+                            name: first.name,
+                            type: TYPE_MAP[group.type] || first.type,
+                            semester: SEMESTER_MAP[group.semester] || first.semester,
+                            day: DAY_LETTERS[m.dayOfWeek],
+                            start: formatMinutesToTime(m.startMinutes),
+                            end: formatMinutesToTime(m.endMinutes),
+                            isElective: first.isElective,
+                            color: first.color || null,
+                        }));
+                    const stale = new Set(entries);
+                    rawCourses = rawCourses.filter(c => !stale.has(c));
+                    rawCourses.splice(Math.min(firstIdx, rawCourses.length), 0, ...fresh);
+                    console.info('[syncCatalog] refreshed', group.id, 'from', have, 'to', want);
+                    changed = true;
+                });
+            });
+            if (changed) updateUI(true);
         });
     }
 
@@ -2792,10 +2867,11 @@
                 let overlaps = 0;
                 let gapMinutes = 0;
                 let before12Count = 0;
+                let timelessCount = 0;
 
                 const byDay = { 'א': [], 'ב': [], 'ג': [], 'ד': [], 'ה': [], 'ו': [] };
                 sched.forEach(cls => {
-                    if (!cls.day || !cls.start || !cls.end) return; // skip timeless entries
+                    if (!cls.day || !cls.start || !cls.end) { timelessCount++; return; } // timeless entries
                     if (byDay[cls.day]) byDay[cls.day].push(cls);
                     if (timeToMins(cls.start) < 720) before12Count++; // 720 = 12:00
                 });
@@ -2833,11 +2909,11 @@
                         gapMinutes += (blocks[j+1].s - blocks[j].e);
                     }
                 }
-                return { overlaps, gapMinutes, before12Count };
+                return { overlaps, gapMinutes, before12Count, timelessCount };
             }
             
             self.onmessage = function(e) {
-                const { rawCourses, currentSem, activeElectives, allowOverlaps } = e.data;
+                const { rawCourses, currentSem, activeElectives, allowOverlaps, pinnedGroupKey, anchorChoices } = e.data;
                 const semCourses = rawCourses.filter(c => c.semester === currentSem || c.semester === "שנתי");
 
                 const groupsToFulfill = {};
@@ -2853,39 +2929,110 @@
                     optionsMap[key][optionKey].push(c);
                 });
                 
+                // Pinned mode: force one specific group to be used (the
+                // other slots stay free). Used when the user wants to move
+                // to a group that isn't among the capped best schedules.
+                if (pinnedGroupKey) {
+                    for (const key in optionsMap) {
+                        if (optionsMap[key][pinnedGroupKey]) {
+                            const only = {};
+                            only[pinnedGroupKey] = optionsMap[key][pinnedGroupKey];
+                            optionsMap[key] = only;
+                        }
+                    }
+                }
+
                 for (const key in optionsMap) {
                     groupsToFulfill[key] = Object.values(optionsMap[key]);
                 }
                 
+                // Hard caps so a big selection can never blow up memory.
+                // The number of valid combinations grows multiplicatively
+                // with every course group, so we never keep more than
+                // MAX_KEEP partial/complete schedules alive.
+                const MAX_KEEP = 400;
+                let truncated = false;
+
+                // anchorChoices = { "name (type)": groupId } of the schedule
+                // currently on screen. When present, pruning keeps the
+                // schedules that CHANGE THE FEWEST course slots relative to
+                // it (ties broken by the normal quality ranking). The final
+                // list is still sorted by quality only, so browsing order
+                // is unchanged. A partial schedule's diff never decreases
+                // as slots are added, so this pruning is exact for the
+                // minimal-change schedules.
+                function diffOf(sched) {
+                    if (!anchorChoices) return 0;
+                    const seen = {};
+                    let d = 0;
+                    for (const c of sched) {
+                        const k = c.name + " (" + c.type + ")";
+                        if (seen[k]) continue;
+                        seen[k] = true;
+                        const a = anchorChoices[k];
+                        if (a !== undefined && a !== (c.courseGroupId || c.id)) d++;
+                    }
+                    return d;
+                }
+                function rank(list, byDiff) {
+                    const scored = list.map(sched => {
+                        const score = evaluateSchedule(sched);
+                        score.diff = byDiff ? diffOf(sched) : 0;
+                        return { sched, score };
+                    });
+                    scored.sort((a, b) => {
+                        if (a.score.diff !== b.score.diff) return a.score.diff - b.score.diff;
+                        if (a.score.overlaps !== b.score.overlaps) return a.score.overlaps - b.score.overlaps;
+                        // A group with no hours adds no gaps/early classes, so it
+                        // would otherwise ALWAYS look "best". Prefer groups that
+                        // have real hours by default; the user can still switch
+                        // to a no-hours group from the alternatives UI.
+                        if (a.score.timelessCount !== b.score.timelessCount) return a.score.timelessCount - b.score.timelessCount;
+                        if (a.score.gapMinutes !== b.score.gapMinutes) return a.score.gapMinutes - b.score.gapMinutes;
+                        return a.score.before12Count - b.score.before12Count;
+                    });
+                    return scored.map(x => x.sched);
+                }
+
                 let results = [[]];
                 let conflictDetails = null;
+                const keys = Object.keys(groupsToFulfill);
 
-                for (const key of Object.keys(groupsToFulfill)) {
+                for (const key of keys) {
                     const options = groupsToFulfill[key];
-                    const newResults = [];
+                    let newResults = [];
                     let lastConflict = null;
 
                     for (const res of results) {
                         for (const optSessions of options) {
                             let conflictObj = null;
-                            
+
                             if (!allowOverlaps) {
                                 for (const session of optSessions) {
                                     conflictObj = hasConflict(res, session);
                                     if (conflictObj) break;
                                 }
                             }
-                            
+
                             if (!conflictObj) {
                                 newResults.push([...res, ...optSessions]);
                             } else {
                                 lastConflict = conflictObj;
                             }
                         }
+                        // Prune early so newResults itself never gets huge.
+                        if (newResults.length > MAX_KEEP * 8) {
+                            newResults = rank(newResults, true).slice(0, MAX_KEEP);
+                            truncated = true;
+                        }
                     }
-                    
+
+                    if (newResults.length > MAX_KEEP) {
+                        newResults = rank(newResults, true).slice(0, MAX_KEEP);
+                        truncated = true;
+                    }
                     results = newResults;
-                    
+
                     if (results.length === 0) {
                         conflictDetails = {
                             failedCourse: key,
@@ -2894,30 +3041,49 @@
                         break;
                     }
                 }
-                
-                // Sort all generated schedules globally from best to worst
-                if (results.length > 0) {
-                    const scoredResults = results.map(sched => ({
-                        sched,
-                        score: evaluateSchedule(sched)
-                    }));
-                    scoredResults.sort((a, b) => {
-                        if (a.score.overlaps !== b.score.overlaps) return a.score.overlaps - b.score.overlaps;
-                        if (a.score.gapMinutes !== b.score.gapMinutes) return a.score.gapMinutes - b.score.gapMinutes;
-                        return a.score.before12Count - b.score.before12Count;
-                    });
-                    results = scoredResults.map(item => item.sched);
+
+                // Pruning is a heuristic: it could (rarely) discard every
+                // partial schedule that would have completed. If that
+                // happened, fall back to a bounded depth-first search.
+                if (results.length === 0 && truncated) {
+                    const found = [];
+                    let budget = 1500000;
+                    const dfs = (idx, cur) => {
+                        if (found.length >= MAX_KEEP || budget-- <= 0) return;
+                        if (idx === keys.length) { found.push(cur); return; }
+                        for (const optSessions of groupsToFulfill[keys[idx]]) {
+                            let bad = false;
+                            if (!allowOverlaps) {
+                                for (const session of optSessions) {
+                                    if (hasConflict(cur, session)) { bad = true; break; }
+                                }
+                            }
+                            if (!bad) dfs(idx + 1, cur.concat(optSessions));
+                            if (found.length >= MAX_KEEP || budget <= 0) return;
+                        }
+                    };
+                    dfs(0, []);
+                    if (found.length > 0) {
+                        results = found;
+                        conflictDetails = null;
+                    }
                 }
+
+                // Sort all generated schedules globally from best to worst
+                if (results.length > 0) results = rank(results, false);
                 
-                self.postMessage({ results, conflictDetails });
+                self.postMessage({ results, conflictDetails, truncated, pin: !!e.data.pinJump, pinRefresh: !!e.data.pinRefresh, seq: e.data.seq });
             };
         `;
         const blob = new Blob([workerScript], {type: 'application/javascript'});
         scheduleWorker = new Worker(URL.createObjectURL(blob));
         
         scheduleWorker.onmessage = function(e) {
+            if (e.data.pin) { handlePinnedResult(e.data); return; }
+            if (e.data.seq !== undefined && e.data.seq !== latestSolveSeq) return; // stale
             validSchedules = e.data.results;
             lastConflictDetails = e.data.conflictDetails;
+            scheduleListTruncated = !!e.data.truncated;
 
             const currentSem = getCurrentSemester();
             
@@ -2925,10 +3091,11 @@
                 const targetId = pendingAlternativeJump;
                 pendingAlternativeJump = null;
                 let foundIdx = -1;
-                for (let i = 0; i < validSchedules.length; i++) {
-                    if (validSchedules[i].some(c => c.id === targetId)) {
-                        foundIdx = i; break;
-                    }
+                const containing = [];
+                validSchedules.forEach((sc, i) => { if (sc.some(c => c.id === targetId)) containing.push(i); });
+                if (containing.length > 0) {
+                    const sub = containing.map(i => validSchedules[i]);
+                    foundIdx = containing[chooseClosestScheduleIndex(sub, scheduleSnapshotBeforeUpdate)];
                 }
                 if (foundIdx !== -1) {
                     semesterIndices[currentSem] = foundIdx;
@@ -2957,6 +3124,7 @@
             scheduleSnapshotBeforeUpdate = null;
             hasComputedOnce = true;
             lastComputedSemester = currentSem;
+            const needsUnpinnedRefresh = !!e.data.pinRefresh && validSchedules.length > 0;
 
             document.getElementById('calendarBody').style.opacity = '1';
             activeAlternativeKey = null; 
@@ -2967,6 +3135,11 @@
             updateCourseList();
             
             localStorage.setItem('mySchedulesIndices', JSON.stringify(semesterIndices));
+
+            // That solve was restricted to schedules containing one group.
+            // Recompute the normal list (anchored on what's showing now, so
+            // the shown schedule stays put) to restore full browsing.
+            if (needsUnpinnedRefresh) updateUI(false, true);
         };
     }
 
@@ -3018,6 +3191,7 @@
         // catalog index has had time to load (2 s is intentionally > 1.5 s so
         // _seedMissingCourseExams runs first for already-linked courses).
         setTimeout(_linkLegacyCourses, 2000);
+        setTimeout(_syncCatalogEntries, 2500);
 
         // Restore the semester the user was last looking at. Without this the
         // selector always snaps back to א' on every reload, hiding all semester-ב
@@ -4262,7 +4436,17 @@
         event.target.value = ""; 
     }
 
+    // Day lists as Shoam writes them: "ב',ה'", "ב', ה'", "ב,ה", "ב' ה'".
+    const DAY_LIST_SRC = "[א-ו]'?(?:(?:\\s*,\\s*[א-ו]'?)|(?:\\s+[א-ו]'))*";
+    function splitDayList(str) {
+        return str.split(/[,\s]+/).map(d => d.replace(/'/g, '')).filter(Boolean);
+    }
+    // Problems found while parsing a paste (e.g. a day that had to be
+    // guessed) — shown to the user instead of silently guessing.
+    let pasteWarnings = [];
+
     function processInput() {
+        pasteWarnings = [];
         const text = document.getElementById('pasteArea').value.trim();
         const forceElective = document.getElementById('addAsElectiveToggle').checked;
         if (!text) return;
@@ -4274,6 +4458,10 @@
         }
 
         if (added > 0) {
+            console.info('[paste] parser v3 — courses added:', rawCourses.slice(-8).map(c => `${c.name} | ${c.type} | ${c.semester} | ${c.day} ${c.start}-${c.end} | group=${c.courseGroupId}`));
+            if (pasteWarnings.length) {
+                alert('שים לב:\n' + pasteWarnings.join('\n') + '\n\nאפשר לתקן ידנית בעריכה, או להוסיף את הקורס דרך החיפוש בקטלוג.');
+            }
             document.getElementById('pasteArea').value = '';
             document.getElementById('addAsElectiveToggle').checked = false;
             updateUI(true);
@@ -4312,7 +4500,8 @@
                  let type = lines[typeIdx];
                  let semester = "א'";
                  let sessions = [];
-                 let pendingDays = [];
+                 let dayBlocks = [];
+                 let orphanTimes = [];
                  
                  let j = typeIdx + 1;
                  while(j < lines.length) {
@@ -4328,25 +4517,47 @@
                               if (semester === "שנת'") semester = "שנתי";
                           }
                       } else {
-                          const daysMatch = line.match(/^([א-ו]'?(?:\s*,\s*[א-ו]'?)*)/);
-                          const timeMatch = line.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-                          
+                          // Shoam's table labels its columns ("יום  ב',ה'" /
+                          // "שעה  10:00 - 12:00"); drop the label so the
+                          // days / hours underneath are recognised.
+                          line = line.replace(/^(?:ימים|יום|שעות|שעה)[\s:]+/, '');
+                          const daysMatch = line.match(new RegExp("^(" + DAY_LIST_SRC + ")(?=\\s|$|[^א-ת])"));
+                          const timeMatches = Array.from(line.matchAll(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g));
+
                           if (daysMatch) {
-                              pendingDays = daysMatch[1].split(',').map(d => d.replace(/['\s]/g, ""));
-                          }
-                          
-                          if (timeMatch && pendingDays.length > 0) {
-                              const day = pendingDays.shift();
-                              sessions.push({
-                                  day: day,
-                                  start: timeMatch[1].padStart(5, '0'),
-                                  end: timeMatch[2].padStart(5, '0')
+                              dayBlocks.push({
+                                  days: splitDayList(daysMatch[1]),
+                                  // hours that appeared BEFORE the days line
+                                  // (some layouts list hours first) belong to
+                                  // the first days line.
+                                  times: dayBlocks.length === 0 ? orphanTimes.splice(0) : []
                               });
                           }
+
+                          // A line may carry several time ranges; each
+                          // belongs to the most recent list of days.
+                          const target = dayBlocks.length > 0 ? dayBlocks[dayBlocks.length - 1].times : orphanTimes;
+                          timeMatches.forEach(tm => target.push({
+                              start: tm[1].padStart(5, '0'),
+                              end: tm[2].padStart(5, '0')
+                          }));
                       }
                       j++;
                  }
                  
+                 // days[i] <-> times[i] (e.g. "ב',ה'" with "10:00-12:00" then
+                 // "12:00-14:00" = Mon 10-12, Thu 12-14). A single time range
+                 // listed for several days applies to each of those days.
+                 dayBlocks.forEach(block => {
+                     if (block.times.length === 1) {
+                         block.days.forEach(d => sessions.push({ day: d, start: block.times[0].start, end: block.times[0].end }));
+                     } else {
+                         block.times.forEach((t, idx) => {
+                             if (idx < block.days.length) sessions.push({ day: block.days[idx], start: t.start, end: t.end });
+                         });
+                     }
+                 });
+
                  if (sessions.length > 0) {
                      let courseGroupId = Date.now() + Math.random().toString(36).substring(2, 8);
                      let isElective = forceElective || cleanName.includes('בחירה');
@@ -4393,17 +4604,19 @@
         let parsedCount = 0;
 
         chunks.forEach(chunk => {
-            const parsed = parseChunkOld(chunk, forceElective);
-            if (parsed) {
+            const parsedList = parseChunkOld(chunk, forceElective);
+            let addedAny = false;
+            (parsedList || []).forEach(parsed => {
                 let isDup = rawCourses.some(c => 
                      c.name === parsed.name && c.type === parsed.type && c.semester === parsed.semester &&
                      c.day === parsed.day && c.start === parsed.start && c.end === parsed.end
                 );
                 if (!isDup) {
                     rawCourses.push(parsed); 
-                    parsedCount++; 
+                    addedAny = true;
                 }
-            }
+            });
+            if (addedAny) parsedCount++;
         });
         return parsedCount;
     }
@@ -4421,16 +4634,46 @@
         
         const timeMatch = chunk.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
         if (!timeMatch) return null;
-        const start = timeMatch[1].padStart(5, '0');
-        const end = timeMatch[2].padStart(5, '0');
-        
+
         const semIndex = chunk.indexOf(semMatch[0]);
         const timeIndex = chunk.indexOf(timeMatch[0]);
         if(timeIndex < semIndex) return null;
-        
+
+        // Every time range after the semester, in order (a group can meet
+        // on several days, each with its own hours).
+        const tail = chunk.substring(timeIndex);
+        const times = Array.from(tail.matchAll(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/g))
+            .map(m => ({ start: m[1].padStart(5, '0'), end: m[2].padStart(5, '0') }));
+
+        // Days: prefer an explicit "יום ..." label (whose own letters — the
+        // ו in "יום" — must not be mistaken for a day), looked for first
+        // between the semester and the hours, then anywhere in the block
+        // (some layouts put the days after the hours); then a standalone
+        // day token. Only if none is found is the old default of א used —
+        // and the user is warned instead of it being silent.
         const between = chunk.substring(semIndex + semMatch[0].length, timeIndex);
-        const dayMatch = between.match(/([א-ו]'?)/);
-        let day = dayMatch ? dayMatch[1].replace("'", "") : 'א';
+        const labelRe = new RegExp("(?:^|\\s)(?:ימים|יום)\\s*(" + DAY_LIST_SRC + ")(?=\\s|$|[^א-ת])");
+        const tokenRe = new RegExp("(?:^|\\s)([א-ו]'(?:(?:\\s*,\\s*[א-ו]'?)|(?:\\s+[א-ו]'))*)(?=\\s|$)");
+        const singleRe = new RegExp("(?:^|\\s)([א-ו])(?=\\s|$)");
+        let dayMatch = between.match(labelRe) || chunk.match(labelRe) || between.match(tokenRe) || between.match(singleRe);
+        let days;
+        if (dayMatch) {
+            days = splitDayList(dayMatch[1]);
+        } else {
+            days = ['א'];
+            pasteWarnings.push('לא זוהו ימים עבור "' + type + '" (' + chunk.substring(0, 25).trim() + '...) — הוגדר יום א\' כברירת מחדל.');
+        }
+
+        const pairs = [];
+        if (times.length === 1) {
+            days.forEach(d => pairs.push({ day: d, start: times[0].start, end: times[0].end }));
+        } else {
+            times.forEach((t, idx) => { if (idx < days.length) pairs.push({ day: days[idx], start: t.start, end: t.end }); });
+        }
+        if (pairs.length === 0) return null;
+        if (times.length > days.length && times.length > 1) {
+            pasteWarnings.push('"' + type + '": זוהו ' + times.length + ' טווחי שעות אך רק ' + days.length + ' ימים — ייתכן שחלק מהמפגשים חסרים.');
+        }
         
         let isElective = forceElective || (chunk.includes('בחירה') && !chunk.includes('חובה'));
         
@@ -4449,7 +4692,14 @@
 
         if (isElective) activeElectives.add(name);
 
-        return { id: Date.now() + Math.random().toString(36).substring(2, 8), courseGroupId: null, name, type, semester, day, start, end, isElective, color: null };
+        // Several meetings of one group must share a courseGroupId so the
+        // solver treats them as ONE option instead of alternatives.
+        const sharedGroupId = pairs.length > 1 ? Date.now() + Math.random().toString(36).substring(2, 8) : null;
+        return pairs.map(pr => ({
+            id: Date.now() + Math.random().toString(36).substring(2, 8),
+            courseGroupId: sharedGroupId,
+            name, type, semester, day: pr.day, start: pr.start, end: pr.end, isElective, color: null
+        }));
     }
 
 
@@ -4510,6 +4760,12 @@
      * reshuffling the whole schedule. Falls back to index 0 (the solver's
      * own best-first ordering) when there's no previous schedule to compare
      * against, or nothing in it survived into any candidate. */
+    // The schedule currently on screen, as { "name (type)": groupId } — what
+    // the solver uses to keep the schedules that change the least.
+    function anchorChoicesFor(schedule) {
+        return (schedule && schedule.length) ? scheduleGroupChoices(schedule) : null;
+    }
+
     function chooseClosestScheduleIndex(candidates, previousSchedule) {
         if (candidates.length === 0) return 0;
         if (!previousSchedule || previousSchedule.length === 0) return 0;
@@ -4533,7 +4789,7 @@
         return bestIdx;
     }
 
-    function updateUI(pushHistory = true) {
+    function updateUI(pushHistory = true, silent = false) {
         if (pushHistory) saveState(true);
         document.getElementById('undoBtn').disabled = historyStack.length === 0;
 
@@ -4548,10 +4804,15 @@
         // up to date.
         renderSavedSchedules();
 
-        const statusEl = document.getElementById('scheduleStatus');
-        statusEl.innerText = 'מחשב אפשרויות... ⏳';
-        statusEl.style.color = 'var(--text-muted)';
-        document.getElementById('calendarBody').style.opacity = '0.4';
+        // A silent refresh re-solves in the background (to restore the
+        // full browsable list) while the schedule on screen is already
+        // final — so no "computing" text and no dimming.
+        if (!silent) {
+            const statusEl = document.getElementById('scheduleStatus');
+            statusEl.innerText = 'מחשב אפשרויות... ⏳';
+            statusEl.style.color = 'var(--text-muted)';
+            document.getElementById('calendarBody').style.opacity = '0.4';
+        }
 
         // Only meaningful to compare against the schedule that was showing
         // if we're recomputing the SAME semester we last solved — right
@@ -4561,11 +4822,20 @@
         const sameSemesterAsLastCompute = hasComputedOnce && lastComputedSemester === currentSem;
         scheduleSnapshotBeforeUpdate = sameSemesterAsLastCompute ? (validSchedules[semesterIndices[currentSem]] || []) : null;
 
+        let pinKey = null;
+        if (pendingAlternativeJump) {
+            const t = rawCourses.find(c => c.id === pendingAlternativeJump);
+            if (t) pinKey = t.courseGroupId || t.id;
+        }
         scheduleWorker.postMessage({
             rawCourses: rawCourses,
             currentSem: currentSem,
             activeElectives: Array.from(activeElectives),
-            allowOverlaps: devModeAllowOverlaps
+            allowOverlaps: devModeAllowOverlaps,
+            anchorChoices: anchorChoicesFor(scheduleSnapshotBeforeUpdate),
+            pinnedGroupKey: pinKey,
+            pinRefresh: !!pinKey,
+            seq: ++latestSolveSeq
         });
     }
 
@@ -4584,10 +4854,10 @@
             statusEl.style.color = 'var(--danger)';
             statusEl.style.fontSize = '14px'; 
         } else {
-            statusEl.innerText = `מערכת ${semesterIndices[currentSem] + 1} מתוך ${validSchedules.length}`;
+            statusEl.innerText = `מערכת ${semesterIndices[currentSem] + 1} מתוך ${validSchedules.length}${scheduleListTruncated ? '+' : ''}`;
             statusEl.style.color = 'var(--text-main)';
             statusEl.style.fontSize = '18px';
-            statusEl.title = '';
+            statusEl.title = scheduleListTruncated ? 'יש יותר מדי אפשרויות - מוצגות המערכות הטובות ביותר בלבד' : '';
         }
 
         // Which saved card is framed depends on which alternative is
@@ -4775,7 +5045,7 @@
                 if (conflict.isElective) {
                     canMoveLater = true;
                 }
-                else if (validSchedules.some(sched => sched.some(c => c.id === optSessions[0].id))) {
+                else if (scheduleListTruncated || validSchedules.some(sched => sched.some(c => c.id === optSessions[0].id))) {
                     canMoveLater = true;
                 }
             }
@@ -4799,53 +5069,136 @@
         const currentSem = getCurrentSemester();
         const currentSchedule = validSchedules[semesterIndices[currentSem]] || [];
         
+        const targetClass = rawCourses.find(c => c.id === targetId);
+
+        // When the list is truncated, the best-fitting schedule for this
+        // move may not be in it — ask the solver for schedules using this
+        // exact group, keeping everything else as unchanged as possible.
+        if (scheduleListTruncated && targetClass) {
+            // Fast path: if just swapping THIS group into the schedule
+            // that's on screen causes no conflict, that is by definition
+            // the minimal change (nothing else moves) — apply it right
+            // now, no solver run needed.
+            if (tryInstantMove(targetClass, currentSem, currentSchedule)) return;
+
+            // Otherwise solve for it; dim the calendar so the click
+            // visibly registered while that runs.
+            latestSolveSeq++;
+            document.getElementById('calendarBody').style.opacity = '0.4';
+            pendingPinRequest = { targetId };
+            scheduleWorker.postMessage({
+                rawCourses: rawCourses,
+                currentSem: currentSem,
+                activeElectives: Array.from(activeElectives),
+                allowOverlaps: devModeAllowOverlaps,
+                pinnedGroupKey: targetClass.courseGroupId || targetClass.id,
+                anchorChoices: anchorChoicesFor(currentSchedule),
+                pinJump: true
+            });
+            return;
+        }
+
         const candidateIndices = [];
         validSchedules.forEach((schedule, idx) => {
             if (schedule.some(cls => cls.id === targetId)) candidateIndices.push(idx);
         });
 
         if (candidateIndices.length > 0) {
-            let bestIndex = candidateIndices[0];
-            let maxOverlap = -1;
-
-            candidateIndices.forEach(idx => {
-                const candidateSchedule = validSchedules[idx];
-                let overlapCount = 0;
-                candidateSchedule.forEach(cls => {
-                    if (currentSchedule.some(currentCls => currentCls.id === cls.id)) overlapCount++;
-                });
-
-                if (overlapCount > maxOverlap) {
-                    maxOverlap = overlapCount;
-                    bestIndex = idx;
-                }
-            });
-
+            // Fewest changed course slots; ties go to the better-ranked one.
+            const sub = candidateIndices.map(i => validSchedules[i]);
+            const bestIndex = candidateIndices[chooseClosestScheduleIndex(sub, currentSchedule)];
             semesterIndices[currentSem] = bestIndex;
-            activeAlternativeKey = null; 
+            activeAlternativeKey = null;
             updateStatus();
             renderCalendar();
             localStorage.setItem('mySchedulesIndices', JSON.stringify(semesterIndices));
         } else {
-            const targetClass = rawCourses.find(c => c.id === targetId);
-            if (targetClass) {
-                const currentOptionKey = targetClass.courseGroupId || targetClass.id;
-                const scheduleMinusSource = currentSchedule.filter(c => c.name !== targetClass.name || c.type !== targetClass.type);
-                
-                const targetSessions = rawCourses.filter(c => (c.courseGroupId || c.id) === currentOptionKey);
-                
-                let conflictObj = null;
-                for(const session of targetSessions) {
-                    const conf = hasStrictConflict(scheduleMinusSource, session);
-                    if (conf) { conflictObj = conf; break; }
-                }
-                
-                if (conflictObj && conflictObj.isElective) {
-                    removeElectiveAndJump(conflictObj.name, targetId, null);
-                } else {
-                    alert("לא ניתן להעביר את השיעור לכאן כי הוא מתנגש עם שיעור שאין לו חלופה.");
-                }
+            jumpToAlternativeFallback(targetId);
+        }
+    }
+
+    function tryInstantMove(targetClass, currentSem, currentSchedule) {
+        const key = targetClass.courseGroupId || targetClass.id;
+        const sessions = rawCourses.filter(c =>
+            (c.courseGroupId || c.id) === key &&
+            (c.semester === currentSem || c.semester === "שנתי"));
+        if (sessions.length === 0) return false;
+
+        const rest = currentSchedule.filter(c => !(c.name === targetClass.name && c.type === targetClass.type));
+        if (!devModeAllowOverlaps) {
+            for (const session of sessions) {
+                if (hasStrictConflict(rest, session)) return false;
             }
+        }
+
+        // Only this slot changes; everything else stays exactly as it was.
+        validSchedules = validSchedules.concat([rest.concat(sessions)]);
+        semesterIndices[currentSem] = validSchedules.length - 1;
+        latestSolveSeq++; // drop any in-flight (now outdated) solver result
+        activeAlternativeKey = null;
+        updateStatus();
+        renderCalendar();
+        renderElectivesSidebar();
+        updateCourseList();
+        localStorage.setItem('mySchedulesIndices', JSON.stringify(semesterIndices));
+        scheduleSilentRefresh();
+        return true;
+    }
+
+    // Re-solve in the background shortly after a move so the schedule list
+    // (arrows, counter, alternatives) is rebuilt around the new schedule.
+    // Debounced so a burst of moves costs a single solve.
+    function scheduleSilentRefresh() {
+        clearTimeout(silentRefreshTimer);
+        silentRefreshTimer = setTimeout(() => updateUI(false, true), 400);
+    }
+
+    // Result of a pinned solve: append the schedules that contain the
+    // requested group and jump to the one closest to what's on screen.
+    function handlePinnedResult(data) {
+        const req = pendingPinRequest;
+        pendingPinRequest = null;
+        if (!req) return;
+        if (data.results && data.results.length > 0) {
+            const currentSem = getCurrentSemester();
+            const currentSchedule = validSchedules[semesterIndices[currentSem]] || [];
+            const idx = chooseClosestScheduleIndex(data.results, currentSchedule);
+            validSchedules = data.results;
+            semesterIndices[currentSem] = idx;
+            activeAlternativeKey = null;
+            updateStatus();
+            renderCalendar();
+            renderElectivesSidebar();
+            updateCourseList();
+            localStorage.setItem('mySchedulesIndices', JSON.stringify(semesterIndices));
+            // Restore the full (unpinned) list, anchored on the new schedule.
+            document.getElementById('calendarBody').style.opacity = '1';
+            updateUI(false, true);
+        } else {
+            document.getElementById('calendarBody').style.opacity = '1';
+            jumpToAlternativeFallback(req.targetId);
+        }
+    }
+
+    function jumpToAlternativeFallback(targetId) {
+        const currentSem = getCurrentSemester();
+        const currentSchedule = validSchedules[semesterIndices[currentSem]] || [];
+        const targetClass = rawCourses.find(c => c.id === targetId);
+        if (!targetClass) return;
+        const currentOptionKey = targetClass.courseGroupId || targetClass.id;
+        const scheduleMinusSource = currentSchedule.filter(c => c.name !== targetClass.name || c.type !== targetClass.type);
+        const targetSessions = rawCourses.filter(c => (c.courseGroupId || c.id) === currentOptionKey);
+
+        let conflictObj = null;
+        for (const session of targetSessions) {
+            const conf = hasStrictConflict(scheduleMinusSource, session);
+            if (conf) { conflictObj = conf; break; }
+        }
+
+        if (conflictObj && conflictObj.isElective) {
+            removeElectiveAndJump(conflictObj.name, targetId, null);
+        } else {
+            alert("לא ניתן להעביר את השיעור לכאן כי הוא מתנגש עם שיעור שאין לו חלופה.");
         }
     }
 
@@ -4908,7 +5261,7 @@
                 if (conf) { conflictingClass = conf; break; }
             }
             
-            const existsInValid = validSchedules.some(s => s.some(c => c.id === cls.id));
+            const existsInValid = scheduleListTruncated || validSchedules.some(s => s.some(c => c.id === cls.id));
             
             if (conflictingClass) {
                 el.style.color = 'var(--text-main)';
@@ -5095,8 +5448,8 @@
             }
 
             el.innerHTML = `
-                <div class="box-actions">${buttonsHTML}</div>
-                <div class="class-content" style="position:relative; z-index:2; text-align:center;">
+                <div class="class-content" style="text-align:center;">
+                    <div class="box-actions">${buttonsHTML}</div>
                     <div class="class-title" title="${cls.name}">${cls.name}</div>
                     <div class="class-meta">
                         <span class="class-type">${cls.type}</span>
@@ -5129,24 +5482,98 @@
             return true;
         });
 
-        if (timeless.length === 0) {
+        // While a course's alternatives are open, its no-hours groups that
+        // are NOT currently chosen are offered here too — they have no
+        // place on the calendar grid, so this strip is the only place
+        // they can be picked from.
+        const timelessAlts = [];
+        if (activeAlternativeKey) {
+            const seenAlt = new Set(seen);
+            rawCourses.forEach(c => {
+                if (!c.timeless) return;
+                if (!(c.semester === currentSem || c.semester === "שנתי")) return;
+                if (`${c.name} - ${c.type}` !== activeAlternativeKey) return;
+                const key = c.courseGroupId || c.id;
+                if (seenAlt.has(key)) return;
+                seenAlt.add(key);
+                timelessAlts.push(c);
+            });
+        }
+
+        if (timeless.length === 0 && timelessAlts.length === 0) {
             strip.style.display = 'none';
             return;
         }
 
         strip.style.display = '';
-        strip.innerHTML = `
-            <div class="timeless-strip-label">קורסים ללא שעות קבועות:</div>
-            <div class="timeless-chips">
-                ${timeless.map(c => {
-                    const colors = getCourseStyle(c.name, c.type, c.color);
-                    return `<span class="timeless-chip"
-                        style="background:${colors.bg}; border-color:${colors.border}; color:${colors.text};">
-                        ${c.name}
-                        <span class="timeless-chip-type">${c.type}</span>
-                    </span>`;
-                }).join('')}
-            </div>`;
+        strip.innerHTML = '';
+
+        const label = document.createElement('div');
+        label.className = 'timeless-strip-label';
+        label.textContent = 'קורסים ללא שעות קבועות:';
+        strip.appendChild(label);
+
+        const chips = document.createElement('div');
+        chips.className = 'timeless-chips';
+        strip.appendChild(chips);
+
+        const makeChip = (c, opts) => {
+            const colors = getCourseStyle(c.name, c.type, c.color);
+            const chip = document.createElement('span');
+            chip.className = 'timeless-chip' + (opts.ghost ? ' ghost' : '') + (opts.clickable ? ' clickable' : '') + (opts.dimmed ? ' dimmed' : '');
+            chip.style.background = colors.bg;
+            chip.style.borderColor = colors.border;
+            chip.style.color = colors.text;
+            if (opts.title) chip.title = opts.title;
+
+            const nameEl = document.createElement('span');
+            nameEl.textContent = c.name;
+            chip.appendChild(nameEl);
+
+            const typeEl = document.createElement('span');
+            typeEl.className = 'timeless-chip-type';
+            typeEl.textContent = c.type;
+            chip.appendChild(typeEl);
+
+            if (opts.icon) {
+                const iconEl = document.createElement('span');
+                iconEl.className = 'timeless-chip-icon';
+                iconEl.textContent = opts.icon;
+                chip.appendChild(iconEl);
+            }
+            if (opts.onClick) {
+                chip.setAttribute('role', 'button');
+                chip.tabIndex = 0;
+                chip.addEventListener('click', opts.onClick);
+                chip.addEventListener('keydown', (ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); opts.onClick(); }
+                });
+            }
+            return chip;
+        };
+
+        timeless.forEach(c => {
+            const courseKey = `${c.name} - ${c.type}`;
+            const status = getSearchStatus(c, schedule);
+            const canSwitch = status !== 'locked';
+            chips.appendChild(makeChip(c, {
+                clickable: canSwitch,
+                dimmed: !!activeAlternativeKey && activeAlternativeKey !== courseKey,
+                icon: canSwitch ? '🔍' : '',
+                title: canSwitch ? 'הצג חלופות קיימות (קבוצות אחרות של אותו קורס)' : 'נעול - אין אופציות אחרות',
+                onClick: canSwitch ? () => toggleAlternatives(courseKey) : null,
+            }));
+        });
+
+        timelessAlts.forEach(c => {
+            chips.appendChild(makeChip(c, {
+                ghost: true,
+                clickable: true,
+                icon: '⇄',
+                title: 'קבוצה ללא שעות קבועות - לחיצה לבחירה',
+                onClick: () => jumpToAlternative(c.id),
+            }));
+        });
     }
 
     function renderCalendar() {
@@ -5317,6 +5744,11 @@
                     
                     el.style.width = numCols === 1 ? '100%' : `calc(${widthPercent}% - 4px)`;
                     el.style.right = `${rightPercent}%`;
+                    // How far (in % of THIS block's width) the column extends beyond
+                    // the block on each side. The hover-enlarged card uses these to
+                    // grow across the whole day column, as if nothing overlapped it.
+                    el.style.setProperty('--ext-right', (rightPercent / widthPercent * 100).toFixed(3));
+                    el.style.setProperty('--ext-left', (Math.max(0, 100 - rightPercent - widthPercent) / widthPercent * 100).toFixed(3));
                     el.style.left = 'auto'; 
                     el.style.marginRight = numCols === 1 ? '0' : '2px';
 
