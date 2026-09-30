@@ -40,6 +40,11 @@ async function loadCatalogIndex() {
         console.error('Failed to load course catalog — search will be unavailable.', err);
         catalogIndex = [];
     }
+
+    // If the person started typing while the catalog was still loading, the
+    // dropdown is showing "loading…" and nothing else would ever redraw it.
+    const searchDropdown = document.getElementById('searchResultsDropdown');
+    if (searchDropdown && searchDropdown.style.display !== 'none') onSearchInput();
 }
 
 function fetchCourseDetail(id) {

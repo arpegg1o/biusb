@@ -19,6 +19,16 @@ function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+// A JavaScript string literal that is safe to drop into a double-quoted inline
+// handler attribute, e.g.  onclick="openEdit(${jsArg(id)})".
+// JSON.stringify escapes quotes/backslashes/newlines for the JS side, and
+// escapeHtml protects the HTML attribute around it (the browser decodes the
+// entities before running the handler). Use it for EVERY value interpolated
+// into an inline handler: Hebrew names routinely contain ' and " (חדו"א).
+function jsArg(value) {
+    return escapeHtml(JSON.stringify(String(value == null ? '' : value)));
+}
+
 function timeToMins(t) {
     const [h, m] = t.split(':').map(Number);
     return h * 60 + m;

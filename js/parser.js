@@ -14,6 +14,13 @@ const DAY_LIST_SRC = "[א-ו]'?(?:(?:\\s*,\\s*[א-ו]'?)|(?:\\s+[א-ו]'))*";
 function splitDayList(str) {
     return str.split(/[,\s]+/).map(d => d.replace(/'/g, '')).filter(Boolean);
 }
+// "א" / "א'" -> "א'", "ב" / "ב'" -> "ב'", "שנתי" -> "שנתי" (annual has no
+// apostrophe; blindly appending one produced "שנתי'", which nothing recognises).
+function normalizePasteSemester(raw) {
+    const s = String(raw).replace(/'/g, '');
+    return s === 'שנתי' ? 'שנתי' : s + "'";
+}
+
 // Problems found while parsing a paste (e.g. a day that had to be
 // guessed) — shown to the user instead of silently guessing.
 let pasteWarnings = [];
@@ -115,8 +122,7 @@ function processNewFormat(text, forceElective) {
                   if (line.includes('סמסטר')) {
                       const semMatch = line.match(/סמסטר\s*(א'|ב'|א|ב|שנתי)/);
                       if (semMatch) {
-                          semester = semMatch[1].replace("'", "") + "'";
-                          if (semester === "שנת'") semester = "שנתי";
+                          semester = normalizePasteSemester(semMatch[1]);
                       }
                   } else {
                       // Shoam's table labels its columns ("יום  ב',ה'" /
@@ -237,8 +243,7 @@ function parseChunkOld(chunk, forceElective) {
     
     const semMatch = chunk.match(/סמסטר\s*(א'|ב'|א|ב|שנתי)/);
     if (!semMatch) return null;
-    let semester = semMatch[1].replace("'", "") + "'";
-    if (semester === "שנת'") semester = "שנתי";
+    let semester = normalizePasteSemester(semMatch[1]);
     
     const timeMatch = chunk.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
     if (!timeMatch) return null;

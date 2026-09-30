@@ -122,7 +122,7 @@ function renderElectivesSidebar() {
         };
         
         li.innerHTML = `
-                <span>${name}</span>
+                <span>${escapeHtml(name)}</span>
                 <span class="status-dot" style="background-color: ${dotColor}"></span>
             `;
         listEl.appendChild(li);
@@ -158,10 +158,10 @@ function updateCourseList() {
         groupDiv.innerHTML = `
                 <div class="course-group-title">
                     <div style="display:flex; align-items:center; gap: 10px;">
-                        <span>${name}</span>
+                        <span>${escapeHtml(name)}</span>
                         <div style="display:flex; border: 1px solid var(--border); border-radius:4px; overflow:hidden;">
-                            <button class="make-elective-btn ${reqBtnClass}" style="border-radius:0" onclick="toggleCourseGlobalElectiveState('${name}', false)">חובה</button>
-                            <button class="make-elective-btn ${eleBtnClass}" style="border-radius:0" onclick="toggleCourseGlobalElectiveState('${name}', true)">בחירה</button>
+                            <button class="make-elective-btn ${reqBtnClass}" style="border-radius:0" onclick="toggleCourseGlobalElectiveState(${jsArg(name)}, false)">חובה</button>
+                            <button class="make-elective-btn ${eleBtnClass}" style="border-radius:0" onclick="toggleCourseGlobalElectiveState(${jsArg(name)}, true)">בחירה</button>
                         </div>
                     </div>
                     <span style="font-size:13px; color:var(--text-muted);">${data.items.length} שורות / חלופות</span>
@@ -177,28 +177,28 @@ function updateCourseList() {
         
         Object.values(groupedByTypeAndOption).forEach(sessions => {
             const first = sessions[0];
-            const timeStrings = sessions.map(s => `יום ${s.day}' | ${s.start} - ${s.end}`).join('<br>');
+            const timeStrings = sessions.map(s => escapeHtml(`יום ${s.day}' | ${s.start} - ${s.end}`)).join('<br>');
             
             const row = document.createElement('div');
             row.className = 'course-option-row';
             
-            const editBtnHtml = sessions.length === 1 ? `<button class="icon-btn" onclick="openEdit('${first.id}')" title="עריכה ידנית">✏️</button>` : '';
+            const editBtnHtml = sessions.length === 1 ? `<button class="icon-btn" onclick="openEdit(${jsArg(first.id)})" title="עריכה ידנית">✏️</button>` : '';
             const addMoreBtnHtml = extractCourseIdFromGroupId(first.courseGroupId)
-                ? `<button class="icon-btn" onclick="openAddMoreForCourse('${first.id}')" title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">➕</button>`
+                ? `<button class="icon-btn" onclick="openAddMoreForCourse(${jsArg(first.id)})" title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">➕</button>`
                 : '';
 
             row.innerHTML = `
                     <div style="font-size:14px; display:flex; align-items:flex-start; gap:10px;">
-                        <span class="class-type" style="background:#7f8c8d; font-size:12px; margin-top:2px;">${first.type}</span>
+                        <span class="class-type" style="background:#7f8c8d; font-size:12px; margin-top:2px;">${escapeHtml(first.type)}</span>
                         <div>
-                            <div style="font-weight:bold; font-size:12px; margin-bottom:4px;">סמסטר ${first.semester}</div>
+                            <div style="font-weight:bold; font-size:12px; margin-bottom:4px;">סמסטר ${escapeHtml(first.semester)}</div>
                             <span dir="ltr" style="display:inline-block; font-size:12px; line-height: 1.4;">${timeStrings}</span>
                         </div>
                     </div>
                     <div>
                         ${editBtnHtml}
                         ${addMoreBtnHtml}
-                        <button class="icon-btn" onclick="deleteCourseGroup('${first.courseGroupId || first.id}')" title="מחק שורה זו (ימחק את כל הימים של קבוצה זו)">🗑️</button>
+                        <button class="icon-btn" onclick="deleteCourseGroup(${jsArg(first.courseGroupId || first.id)})" title="מחק שורה זו (ימחק את כל הימים של קבוצה זו)">🗑️</button>
                     </div>
                 `;
             groupDiv.appendChild(row);

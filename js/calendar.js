@@ -34,9 +34,9 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
         el.title = added ? 'לחיצה להסרה' : 'לחיצה לבחירה';
         el.onclick = () => pickPreviewGroup(cls.id);
         el.innerHTML = `
-                <div class="class-title">${cls.name}</div>
-                ${cls.lecturerName ? `<div style="font-size: clamp(8px, 10cqw, 10px); margin-top: 1px;">${cls.lecturerName}</div>` : ''}
-                <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
+                <div class="class-title">${escapeHtml(cls.name)}</div>
+                ${cls.lecturerName ? `<div style="font-size: clamp(8px, 10cqw, 10px); margin-top: 1px;">${escapeHtml(cls.lecturerName)}</div>` : ''}
+                <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
                 <div style="font-size: 10px; margin-top: 4px; font-weight: bold;">${added ? '✓ נבחר — לחיצה להסרה' : 'לחיצה לבחירה'}</div>
             `;
         return el;
@@ -78,8 +78,8 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                 el.title = `חפיפה עם ${conflictingClass.name} (מצב מפתח)`;
                 
                 el.innerHTML = `
-                        <div class="class-title" title="${cls.name}">${cls.name}</div>
-                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
+                        <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
+                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
                         <div style="font-size: 10px; color: var(--danger); margin-top: 4px; font-weight: bold;">(ייצור חפיפה)</div>
                     `;
             }
@@ -89,8 +89,8 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                 el.title = `הזזה לכאן תזיז גם את ${conflictingClass.name}`;
                 
                 el.innerHTML = `
-                        <div class="class-title" title="${cls.name}">${cls.name}</div>
-                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
+                        <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
+                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
                         <div style="font-size: 10px; color: var(--icon-conditional); margin-top: 4px; font-weight: bold;">(יזיז שיעור אחר)</div>
                     `;
             } else if (conflictingClass.isElective) {
@@ -101,15 +101,15 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                 let extraHTML = `
                     <div style="margin-top: 5px; z-index: 10;">
                         <button class="box-btn danger" style="padding: 3px 6px; font-size: 10px; width: 100%; border-radius: 4px; color: white; background: var(--danger); border: none; font-weight: bold; cursor: pointer;" 
-                                onclick="removeElectiveAndJump('${conflictingClass.name}', '${cls.id}', event)" title="לחץ כדי למחוק את קורס הבחירה ולשבץ פה">
-                            הסר '${conflictingClass.name}'
+                                onclick="removeElectiveAndJump(${jsArg(conflictingClass.name)}, ${jsArg(cls.id)}, event)" title="לחץ כדי למחוק את קורס הבחירה ולשבץ פה">
+                            הסר '${escapeHtml(conflictingClass.name)}'
                         </button>
                     </div>`;
 
                 el.innerHTML = `
-                        <div class="class-title" title="${cls.name}">${cls.name}</div>
-                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
-                        <div style="font-size: 10px; color: var(--danger); margin-top: 4px; font-weight: bold;">(ימחק את '${conflictingClass.name}')</div>
+                        <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
+                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
+                        <div style="font-size: 10px; color: var(--danger); margin-top: 4px; font-weight: bold;">(ימחק את '${escapeHtml(conflictingClass.name)}')</div>
                         ${extraHTML}
                     `;
             } else {
@@ -118,8 +118,8 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                 el.classList.add('dimmed');
                 el.title = `מתנגש עם חובה: ${conflictingClass.name}`;
                 el.innerHTML = `
-                        <div class="class-title" title="${cls.name}">${cls.name}</div>
-                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
+                        <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
+                        <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
                         <div style="font-size: 10px; color: var(--danger); margin-top: 4px; font-weight: bold;">(חסום - מתנגש)</div>
                     `;
             }
@@ -135,7 +135,7 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                         jumpToAlternative(cls.id);
                     }
                 });
-                el.setAttribute('onclick', `jumpToAlternative('${cls.id}')`);
+                el.onclick = () => jumpToAlternative(cls.id);
             }
         } else {
             el.title = "לחץ (או גרור לכאן) כדי להעביר את השיעור לשעה זו";
@@ -148,10 +148,10 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
                 if(draggedId) jumpToAlternative(cls.id);
             });
 
-            el.setAttribute('onclick', `jumpToAlternative('${cls.id}')`);
+            el.onclick = () => jumpToAlternative(cls.id);
             el.innerHTML = `
-                    <div class="class-title" title="${cls.name}">${cls.name}</div>
-                    <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${cls.start} - ${cls.end}</span></div>
+                    <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
+                    <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px); margin-top: 2px;"><span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span></div>
                 `;
         }
     } else {
@@ -217,12 +217,12 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
 
         let buttonsHTML = `
                 <button type="button" class="box-btn" 
-                        onclick="event.stopPropagation(); openEdit('${cls.id}')" 
+                        onclick="event.stopPropagation(); openEdit(${jsArg(cls.id)})" 
                         onpointerdown="event.stopPropagation()"
                         title="עריכה ידנית (יום/שעה/סוג/שם)">${editIconSVG}</button>
                 <button type="button" class="box-btn ${isLocked ? 'locked' : ''}" 
                         ${isLocked ? 'aria-disabled="true"' : ''}
-                        onclick="event.stopPropagation(); ${isLocked ? 'event.preventDefault();' : `toggleAlternatives('${courseKey}')`}" 
+                        onclick="event.stopPropagation(); ${isLocked ? 'event.preventDefault();' : `toggleAlternatives(${jsArg(courseKey)})`}" 
                         onpointerdown="event.stopPropagation()"
                         title="${isLocked ? 'נעול - אין אופציות אחרות' : 'הצג חלופות קיימות (או גרור את השיעור)'}" 
                         style="color: ${statusColor};">
@@ -233,7 +233,7 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
         if (cls.isElective) {
             buttonsHTML = `
                     <button type="button" class="box-btn delete-btn" 
-                            onclick="event.stopPropagation(); toggleSidebarElective('${cls.name}')" 
+                            onclick="event.stopPropagation(); toggleSidebarElective(${jsArg(cls.name)})" 
                             onpointerdown="event.stopPropagation()"
                             title="הסר קורס בחירה" style="color:var(--danger)">
                         ${minusIconSVG}
@@ -245,7 +245,7 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
         if (extractCourseIdFromGroupId(cls.courseGroupId)) {
             buttonsHTML = `
                     <button type="button" class="box-btn" 
-                            onclick="event.stopPropagation(); openAddMoreForCourse('${cls.id}')" 
+                            onclick="event.stopPropagation(); openAddMoreForCourse(${jsArg(cls.id)})" 
                             onpointerdown="event.stopPropagation()"
                             title="הוסף חלקים נוספים לקורס (הרצאה/תרגיל/מעבדה...)">
                         ${plusIconSVG}
@@ -257,13 +257,13 @@ function createEventElement(cls, isGhost = false, currentSchedule = [], dynamicS
         el.innerHTML = `
                 <div class="class-content" style="text-align:center;">
                     <div class="box-actions">${buttonsHTML}</div>
-                    <div class="class-title" title="${cls.name}">${cls.name}</div>
+                    <div class="class-title" title="${escapeHtml(cls.name)}">${escapeHtml(cls.name)}</div>
                     <div class="class-meta">
-                        <span class="class-type">${cls.type}</span>
+                        <span class="class-type">${escapeHtml(cls.type)}</span>
                         ${cls.isElective ? '<span class="elective-badge">בחירה</span>' : ''}
                     </div>
                     <div class="class-time" style="font-size: clamp(9px, 11cqw, 11px);">
-                        <span dir="ltr">${cls.start} - ${cls.end}</span>
+                        <span dir="ltr">${escapeHtml(cls.start)} - ${escapeHtml(cls.end)}</span>
                     </div>
                 </div>
             `;

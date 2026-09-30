@@ -178,8 +178,8 @@ function renderSearchDropdown() {
         const dept = departmentNameById.get(r.departmentId);
         return `
             <div class="search-result-item" onclick="selectSearchResult(${i})">
-                <div class="search-result-name">${r.nameHe}</div>
-                <div class="search-result-meta">${r.courseCode}${dept ? ' · ' + dept : ''}</div>
+                <div class="search-result-name">${escapeHtml(r.nameHe)}</div>
+                <div class="search-result-meta">${escapeHtml(r.courseCode)}${dept ? ' · ' + escapeHtml(dept) : ''}</div>
             </div>
         `;
     }).join('');

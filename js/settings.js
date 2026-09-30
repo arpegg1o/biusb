@@ -182,7 +182,7 @@ function onDeptFilterSearchInput() {
     }
     dropdown.innerHTML = results.map((d, i) =>
         `<div class="search-result-item" onclick="selectDeptFilterResult(${i})">
-                <div class="search-result-name">${d.nameHe}</div>
+                <div class="search-result-name">${escapeHtml(d.nameHe)}</div>
             </div>`).join('');
 }
 
@@ -215,7 +215,7 @@ function renderDeptFilterChips() {
     }
     el.innerHTML = Array.from(departmentFilterIds).map((id) => {
         const name = departmentNameById.get(id) || id;
-        return `<span class="dept-filter-chip">${name}<button type="button" onclick="removeDeptFilterChip('${id}')" title="הסרה">×</button></span>`;
+        return `<span class="dept-filter-chip">${escapeHtml(name)}<button type="button" onclick="removeDeptFilterChip(${jsArg(id)})" title="הסרה">×</button></span>`;
     }).join('');
 }
 

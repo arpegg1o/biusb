@@ -17,11 +17,11 @@ function renderSearchAddDialog(course) {
     const creditsDisplay = Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1));
     // Meta line: code · credits, then optional faculty / English name and syllabus link.
     // Catalog strings go through innerHTML, so escape them first.
-    let metaHtml = `${course.courseCode} · ${creditsDisplay} נ"ז`;
+    let metaHtml = `${escapeHtml(course.courseCode)} · ${creditsDisplay} נ"ז`;
     if (course.facultyNameHe) metaHtml += ` · ${escapeHtml(course.facultyNameHe)}`;
     if (course.englishName) metaHtml += ` · ${escapeHtml(course.englishName)}`;
     if (course.syllabus) {
-        metaHtml += ` <a href="https://courses.biu.ac.il/${course.syllabus}" target="_blank" rel="noopener" style="font-size:12px; color:var(--primary); text-decoration:none; margin-right:8px;">סילבוס קורס ↗</a>`;
+        metaHtml += ` <a href="${escapeHtml('https://courses.biu.ac.il/' + course.syllabus)}" target="_blank" rel="noopener" style="font-size:12px; color:var(--primary); text-decoration:none; margin-right:8px;">סילבוס קורס ↗</a>`;
     }
     document.getElementById('searchAddMeta').innerHTML = metaHtml;
     document.getElementById('searchAddManualEditBtn').style.display = manualEditFallbackId ? 'inline-block' : 'none';
@@ -101,10 +101,10 @@ function renderGroupsBySemester(course) {
                     const tag = multi && l.groupCode ? ` (${escapeHtml(l.groupCode)})` : '';
                     const title = multi && l.lecturerName ? ` title="${escapeHtml(l.lecturerName)}"` : '';
                     const shoam = l.shoamId
-                        ? `<a class="group-link"${title} href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${l.shoamId}" target="_blank" rel="noopener">שוהם${tag} ↗</a>`
+                        ? `<a class="group-link"${title} href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${escapeHtml(l.shoamId)}" target="_blank" rel="noopener">שוהם${tag} ↗</a>`
                         : '';
                     const syl = l.syllabus
-                        ? `<a class="group-link"${title} href="https://courses.biu.ac.il/${l.syllabus}" target="_blank" rel="noopener">סילבוס${tag} ↗</a>`
+                        ? `<a class="group-link"${title} href="${escapeHtml('https://courses.biu.ac.il/' + l.syllabus)}" target="_blank" rel="noopener">סילבוס${tag} ↗</a>`
                         : '';
                     return shoam + syl;
                 }).join('');
@@ -112,13 +112,13 @@ function renderGroupsBySemester(course) {
                 return `
                         <div class="group-row ${added ? 'added' : ''}">
                             <div class="group-row-info">
-                                <div><strong>קבוצה ${g.groupCode}</strong>${clusterBadges} — ${g.lecturerName || ''}</div>
+                                <div><strong>קבוצה ${escapeHtml(g.groupCode)}</strong>${clusterBadges} — ${escapeHtml(g.lecturerName || '')}</div>
                                 <div style="color:var(--text-muted); font-size:12px;" dir="ltr">${times || '(ללא שעות)'}</div>
                                 ${remarkHtml}
                                 ${linksBlock}
                             </div>
                             <button class="btn-simple group-toggle-btn" style="padding:6px 12px; font-size:13px;"
-                                    onclick="toggleGroupInSchedule('${g.id}', false, true)">
+                                    onclick="toggleGroupInSchedule(${jsArg(g.id)}, false, true)">
                                 ${added ? 'הסרה' : 'הוספה'}
                             </button>
                         </div>`;

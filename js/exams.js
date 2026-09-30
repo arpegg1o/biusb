@@ -355,18 +355,14 @@ function renderExamsEditSection(course) {
 
     // Helper: render one exam row
     const renderExamRow = (exam) => {
-        let flatIdx = flatExams.indexOf(exam);
-        if (flatIdx === -1) flatIdx = flatExams.findIndex(e =>
-            e.date === exam.date && e.type === exam.type && e.time === exam.time);
-        const editIdx = flatIdx >= 0 ? flatIdx : 0;
         const moedClass = getMoedClass(exam.type);
         return `<div class="exam-row" style="cursor:default;">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="moed-badge ${moedClass}">${exam.type}</span>
-                    <span dir="ltr" style="font-size:13px;">${exam.date}${exam.time ? ' ' + exam.time : ''}</span>
+                    <span class="moed-badge ${moedClass}">${escapeHtml(exam.type)}</span>
+                    <span dir="ltr" style="font-size:13px;">${escapeHtml(exam.date)}${exam.time ? ' ' + escapeHtml(exam.time) : ''}</span>
                 </div>
                 <button class="icon-btn" style="font-size:13px; padding:3px 6px;"
-                    onclick="openEditExam('${courseId}', '${course.nameHe.replace(/'/g,"\\'")}', ${editIdx})"
+                    onclick="openEditExamByKey(${jsArg(courseId)}, ${jsArg(course.nameHe)}, ${jsArg(exam.date)}, ${jsArg(exam.type)}, ${jsArg(exam.time || '')})"
                     title="ערוך">✏️</button>
             </div>`;
     };
@@ -378,7 +374,7 @@ function renderExamsEditSection(course) {
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
                 <h4 style="margin:0;">ערוך מועדי בחינות</h4>
                 <button class="btn-simple" style="font-size:12px; padding:4px 8px;"
-                    onclick="openAddExam('${courseId}', '${course.nameHe.replace(/'/g,"\\'")}')">+ הוסף מועד</button>
+                    onclick="openAddExam(${jsArg(courseId)}, ${jsArg(course.nameHe)})">+ הוסף מועד</button>
             </div>`;
 
     // Sort each bucket chronologically so exams always appear in date order
@@ -674,7 +670,7 @@ function renderExamsDialog() {
     if (overlapDates.size > 0) {
         const overlapList = Array.from(overlapDates).sort().map(d => {
             const names = allEntries.filter(e => e.enrolled && e.exam.date === d).map(e => e.courseName);
-            return `<strong dir="ltr">${d}</strong>: ${names.join(', ')}`;
+            return `<strong dir="ltr">${escapeHtml(d)}</strong>: ${names.map(escapeHtml).join(', ')}`;
         }).join('<br>');
         overlapBanner = `<div class="exams-overlap-banner">
                 <div style="font-weight:bold; margin-bottom:6px;">⚠️ חפיפות במועדי בחינות:</div>
@@ -746,19 +742,19 @@ function renderMonthGrid(year, month, entries, overlapDates) {
                 ? `color-mix(in srgb, ${e.bg} 18%, var(--card))`
                 : 'var(--bg-alt)';
             const shoamLink = e.shoamId
-                ? `<a href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${e.shoamId}" target="_blank" rel="noopener"
+                ? `<a href="https://courses.biu.ac.il/CourseDetails.aspx?lid=${escapeHtml(e.shoamId)}" target="_blank" rel="noopener"
                           onclick="event.stopPropagation()"
                           class="exam-card-shoham-link" title="פתח בשוהם">שוהם ↗</a>`
                 : '';
             return `<div class="exam-card${alpha}"
                     style="border-right: 3px solid ${accentColor}; background: ${cardBg};"
-                    title="${e.courseName}${timeStr}\n${moedLabel}"
-                    onclick="openExamCardEdit('${e.courseName.replace(/'/g,"\\'")}')">
+                    title="${escapeHtml(e.courseName + timeStr + '\n' + moedLabel)}"
+                    onclick="openExamCardEdit(${jsArg(e.courseName)}, ${jsArg(e.exam.date)}, ${jsArg(e.exam.type)}, ${jsArg(e.exam.time || '')})">
                     <div class="exam-card-top-row">
-                        ${e.exam.time ? `<span class="exam-card-time" dir="ltr">${e.exam.time}</span>` : ''}
-                        <span class="moed-badge-small ${moedClass}">${moedLabel.replace('מועד ','')}</span>
+                        ${e.exam.time ? `<span class="exam-card-time" dir="ltr">${escapeHtml(e.exam.time)}</span>` : ''}
+                        <span class="moed-badge-small ${moedClass}">${escapeHtml(moedLabel.replace('מועד ',''))}</span>
                     </div>
-                    <span class="exam-card-name">${e.courseName}</span>
+                    <span class="exam-card-name">${escapeHtml(e.courseName)}</span>
                     ${shoamLink}
                 </div>`;
         }).join('');
@@ -790,21 +786,28 @@ function renderMonthGrid(year, month, entries, overlapDates) {
 
 let _examEditCourse = null; // hold the full course object for the edit dialog
 
-function openExamCardEdit(courseName) {
-    // Open the exams list for this course — find it from map
+// A card in the exams calendar was clicked. The calendar shows per-semester
+// splits, so the exam is identified by its date + type (not by a position in
+// the flat list, which always opened exam #0).
+function openExamCardEdit(courseName, date, type, time) {
+    openEditExamByKey(null, courseName, date, type, time);
+}
+
+/** Opens the edit dialog for the stored exam with this date + type. If it is
+ *  not in the stored list (shouldn't normally happen), opens the "add" dialog
+ *  pre-filled with what was clicked, so nothing silently edits a different exam. */
+function openEditExamByKey(courseId, courseName, date, type, time) {
     const data = courseExamsMap.get(courseName);
-    if (!data || data.exams.length === 0) {
-        // No exams stored yet (e.g. course added before the exam feature) — open add dialog
-        openAddExam(null, courseName);
-        return;
-    }
-    if (data.exams.length === 1) {
-        openEditExam(null, courseName, 0, true);
-    } else {
-        // Multiple exams — open the first; user can't currently navigate between them
-        // from here, but at least it opens rather than silently doing nothing.
-        openEditExam(null, courseName, 0, true);
-    }
+    const idx = (data && Array.isArray(data.exams))
+        ? data.exams.findIndex(e => e.date === date && e.type === type)
+        : -1;
+    if (idx >= 0) { openEditExam(courseId, courseName, idx, true); return; }
+
+    openAddExam(courseId, courseName);
+    if (date) document.getElementById('examEditDate').value = date;
+    if (time) document.getElementById('examEditTime').value = time;
+    const typeEl = document.getElementById('examEditType');
+    if (type && Array.from(typeEl.options || []).some(o => o.value === type)) typeEl.value = type;
 }
 
 function openAddExam(courseId, courseName) {
@@ -914,15 +917,3 @@ function deleteExamEntry() {
     if (document.getElementById('examsDialog').open) renderExamsDialog();
 }
 
-// When a card in the exams calendar is clicked — find all exams for that course
-// and let the user pick which one to edit (or just open the first).
-function openExamCardEditFromCalendar(courseName) {
-    const data = courseExamsMap.get(courseName);
-    if (!data || !data.exams || data.exams.length === 0) return;
-    if (data.exams.length === 1) {
-        openEditExam(null, courseName, 0, true);
-    } else {
-        // Show a small picker inline — open exam[0] for now, user can navigate
-        openEditExam(null, courseName, 0, true);
-    }
-}

@@ -236,8 +236,8 @@ function renderPreviewBar() {
                 ${noHourGroups.map((g) => {
                     const added = isGroupAdded(g);
                     return `<div class="group-row ${added ? 'added' : ''}" style="margin-bottom:4px;">
-                        <div><strong>קבוצה ${g.groupCode}</strong> — ${g.lecturerName || ''}</div>
-                        <button class="btn-simple" style="padding:4px 10px; font-size:12px;" onclick="pickPreviewGroup('${g.id}')">${added ? 'הסרה' : 'הוספה'}</button>
+                        <div><strong>קבוצה ${escapeHtml(g.groupCode)}</strong> — ${escapeHtml(g.lecturerName || '')}</div>
+                        <button class="btn-simple" style="padding:4px 10px; font-size:12px;" onclick="pickPreviewGroup(${jsArg(g.id)})">${added ? 'הסרה' : 'הוספה'}</button>
                     </div>`;
                 }).join('')}
             </div>` : '';
@@ -257,8 +257,8 @@ function renderPreviewBar() {
     bar.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
                 <div>
-                    <strong>${course.nameHe}</strong>
-                    <span style="font-size:12px; color:var(--text-muted);"> · ${course.courseCode} · ${Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1))} נ"ז</span>
+                    <strong>${escapeHtml(course.nameHe)}</strong>
+                    <span style="font-size:12px; color:var(--text-muted);"> · ${escapeHtml(course.courseCode)} · ${Number.isInteger(course.credits) ? course.credits : parseFloat(course.credits.toFixed(1))} נ"ז</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                     <label class="toggle-label" style="font-size:12px;">

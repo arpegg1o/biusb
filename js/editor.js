@@ -315,7 +315,7 @@ function _openManualCourseListDialog(id) {
     let html = '';
     Object.entries(byType).forEach(([type, options]) => {
         const optList = Object.entries(options).map(([key, sessions]) => {
-            const times = sessions.map(s => `יום ${s.day}' ${s.start}-${s.end}`).join(', ');
+            const times = sessions.map(s => escapeHtml(`יום ${s.day}' ${s.start}-${s.end}`)).join(', ');
             const isActive = validSchedules.length > 0
                 ? (validSchedules[semesterIndices[getCurrentSemester()]] || []).some(sc => (sc.courseGroupId || sc.id) === key)
                 : false;
@@ -325,12 +325,12 @@ function _openManualCourseListDialog(id) {
                             <div style="font-size:12px; color:var(--text-muted);">${times}</div>
                         </div>
                         <button class="btn-simple" style="padding:5px 10px; font-size:12px;"
-                                onclick="openEdit('${sessions[0].id}'); document.getElementById('searchAddDialog').close();">
+                                onclick="openEdit(${jsArg(sessions[0].id)}); document.getElementById('searchAddDialog').close();">
                             עריכה
                         </button>
                     </div>`;
         }).join('');
-        html += `<div class="group-section"><h4>${type}</h4>${optList}</div>`;
+        html += `<div class="group-section"><h4>${escapeHtml(type)}</h4>${optList}</div>`;
     });
 
     // Reuse the searchAddDialog for display

@@ -539,10 +539,53 @@ function exportExamsPDF() {
     }
 }
 
+// ── ICS helpers (RFC 5545) ─────────────────────────────────────────────
+/** TEXT values: escape backslash, semicolon, comma and newlines. */
+function _icsEscape(text) {
+    return String(text == null ? '' : text)
+        .replace(/\\/g, '\\\\')
+        .replace(/;/g, '\\;')
+        .replace(/,/g, '\\,')
+        .replace(/\r?\n/g, '\\n');
+}
+
+/** Folds a content line to at most 75 octets (UTF-8), never splitting a
+ *  character; continuation lines start with one space. */
+function _icsFold(line) {
+    const enc = new TextEncoder();
+    let out = '', cur = '', bytes = 0;
+    for (const ch of line) {
+        const b = enc.encode(ch).length;
+        if (bytes + b > 75) { out += cur + '\r\n '; cur = ''; bytes = 1; }
+        cur += ch;
+        bytes += b;
+    }
+    return out + cur;
+}
+
+/** DTSTAMP value: current UTC time as YYYYMMDDTHHMMSSZ. */
+function _icsUtcStamp(d = new Date()) {
+    const p2 = n => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}` +
+           `T${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}${p2(d.getUTCSeconds())}Z`;
+}
+
+// Built from getAllExamEntries() — the very same list the exams calendar and
+// the PNG/PDF exports use — so the file always matches what's on screen
+// (the old month-range filter dropped e.g. semester A's moed bet in March).
 function exportExamsICS() {
-    const currentSem = getCurrentSemester();
-    const semNames   = getCourseNamesForSemester(currentSem);
-    const showGimel  = document.getElementById('examsShowMoedGimelToggle')?.checked === true;
+    const currentSem     = getCurrentSemester();
+    const showMoedGimel  = document.getElementById('examsShowMoedGimelToggle')?.checked === true;
+    const showUnchosen   = document.getElementById('examsShowUnchosenToggle')?.checked !== false;
+
+    let entries = getAllExamEntries(currentSem);
+    if (!showMoedGimel) entries = entries.filter(e => getMoedClass(e.exam.type) !== 'moed-c');
+    if (!showUnchosen)  entries = entries.filter(e => e.enrolled);
+    if (entries.length === 0) return alert('אין מועדי בחינות לייצא.');
+
+    const p2 = n => String(n).padStart(2, '0');
+    const stamp = _icsUtcStamp();
+    const usedUids = new Set();
     const lines = [
         'BEGIN:VCALENDAR',
         'VERSION:2.0',
@@ -550,43 +593,34 @@ function exportExamsICS() {
         'CALSCALE:GREGORIAN',
     ];
 
-    const semKey = semesterKeyFromSelect(currentSem);
-    courseExamsMap.forEach((data, courseName) => {
-        if (!data.exams || !semNames.has(courseName)) return;
-        // Only export exam dates that belong to the current semester's month range.
-        const examsForSem = semKey
-            ? data.exams.filter(e => {
-                const p = parseExamDate(e.date);
-                if (!p) return true;
-                return EXAM_MONTH_TO_SEMESTER[p.month + 1] === semKey;
-            })
-            : data.exams;
-        examsForSem.forEach(exam => {
-            if (!showGimel && getMoedClass(exam.type) === 'moed-c') return;
-            const p = parseExamDate(exam.date);
-            if (!p) return;
-            const pad2 = n => String(n).padStart(2,'0');
-            const dtStart = `${p.year}${pad2(p.month+1)}${pad2(p.day)}`;
-            const timeParts = exam.time ? exam.time.split(':') : null;
-            const dtFull = timeParts
-                ? `${dtStart}T${pad2(timeParts[0])}${pad2(timeParts[1] || '0')}00`
-                : dtStart;
-            lines.push('BEGIN:VEVENT');
-            lines.push(`SUMMARY:${courseName} — ${exam.type || 'בחינה'}`);
-            lines.push(`DTSTART${timeParts ? '' : ';VALUE=DATE'}:${dtFull}`);
-            lines.push(`DESCRIPTION:${data.courseCode || ''} | ${exam.type || ''}`);
-            lines.push(`UID:exam-${courseName.replace(/\s/g,'-')}-${exam.type}-${dtStart}@schedule`);
-            lines.push('END:VEVENT');
-        });
+    entries.forEach(({ courseName, courseCode, exam }) => {
+        const d = parseExamDate(exam.date);
+        if (!d) return;
+        const dtDate = `${d.year}${p2(d.month + 1)}${p2(d.day)}`;
+        const t = exam.time ? String(exam.time).match(/^(\d{1,2}):(\d{2})/) : null;
+        const dtFull = t ? `${dtDate}T${p2(t[1])}${t[2]}00` : dtDate;
+
+        let uid = `exam-${String(courseCode || courseName).replace(/[^\w\u0590-\u05FF-]+/g, '-')}-` +
+                  `${String(exam.type || '').replace(/[^\w\u0590-\u05FF-]+/g, '-')}-${dtFull}@schedule`;
+        for (let n = 2; usedUids.has(uid); n++) uid = uid.replace(/(-\d+)?@schedule$/, `-${n}@schedule`);
+        usedUids.add(uid);
+
+        lines.push('BEGIN:VEVENT');
+        lines.push(`UID:${uid}`);
+        lines.push(`DTSTAMP:${stamp}`);
+        lines.push(`SUMMARY:${_icsEscape(`${courseName} — ${exam.type || 'בחינה'}`)}`);
+        lines.push(`DTSTART${t ? '' : ';VALUE=DATE'}:${dtFull}`);
+        lines.push(`DESCRIPTION:${_icsEscape(`${courseCode || ''} | ${exam.type || ''}`)}`);
+        lines.push('END:VEVENT');
     });
 
     lines.push('END:VCALENDAR');
-    const blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+    const blob = new Blob([lines.map(_icsFold).join('\r\n') + '\r\n'], { type: 'text/calendar;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `exams-${currentSem}.ics`;
     link.click();
-    URL.revokeObjectURL(link.href);
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 function exportExamsJSON() {
