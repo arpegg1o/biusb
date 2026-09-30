@@ -39,7 +39,7 @@
         }
         
         /* NOTE: .class-event's own text color is set inline per-element in
-         * app.js (getCourseStyle()/contrastTextColor()), computed from that
+         * js/utils.js (getCourseStyle()/contrastTextColor()), computed from that
          * event's actual (opaque) fill so it stays legible whatever color a
          * course or custom color happens to be. The base color: var(--text-main)
          * on .class-event further down is only a fallback for the few event
@@ -51,7 +51,7 @@
         /* "מערכת" (system) theme option — no data-theme attribute at all means
          * "follow the OS", so these mirror the dark overrides above under a
          * media query instead. Guarded so an explicit light choice still wins
-         * (see setTheme() in app.js, which only ever sets "light"/"dark"/removes
+         * (see setTheme() in js/settings.js, which only ever sets "light"/"dark"/removes
          * the attribute — never sets it to "light" AND relies on this media
          * query, so the :not() guard here is what prevents a flash of the
          * wrong theme if the OS is dark but the user explicitly chose light). */
@@ -139,7 +139,7 @@
 
         /* Mobile table/list view toggle — only meaningful under the 900px
            breakpoint where the stacked-card layout kicks in; see
-           toggleCalendarViewMode() in app.js and the
+           toggleCalendarViewMode() in js/settings.js and the
            `body:not(.force-table-view)` guards added throughout the
            @media (max-width: 900px) block below. */
         .mobile-only-btn {
@@ -245,7 +245,7 @@
         .site-footer-credit { text-align: center; color: var(--text-muted); font-size: 12px; margin: 10px 0 0; }
 
         /* Saved schedules — the panel right above the credit line, under the
-         * calendar (see "Saved schedules" in app.js). */
+         * calendar (see js/saved-schedules.js). */
         .saved-schedules {
             margin-top: 24px;
             padding: 14px 16px;
@@ -338,6 +338,19 @@
             transition: opacity 0.2s, transform 0.2s;
         }
         #appToast.visible { opacity: 1; transform: translate(-50%, 0); }
+        #appToast.has-action.visible { pointer-events: auto; }
+        #appToast .toast-action {
+            margin-inline-start: 12px;
+            padding: 2px 12px;
+            background: transparent;
+            color: inherit;
+            border: 1px solid currentColor;
+            border-radius: 999px;
+            font: inherit;
+            cursor: pointer;
+        }
+        #appToast .toast-action:hover { background: rgba(128, 128, 128, 0.3); }
+        #appToast .toast-action:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
         /* Department-filter chips in Settings (see renderDeptFilterChips()) */
         .dept-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -580,6 +593,9 @@
         /* When a day-col contains a hovered event it needs to stack above
            every other column so the expanded card is never clipped by a sibling. */
         .day-col:has(.class-event:hover),
+        .day-col:has(.class-event.expanded),
+        .day-col:has(.class-event:focus-visible),
+        .day-col:has(.class-event :focus-visible),
         .day-col:has(.box-btn-popup.open) {
             z-index: 50;
         }
@@ -587,7 +603,7 @@
 
         /* שישי (Friday) is always the last header-cell/day-col (see
          * index.html) so it can piggyback on the :last-child rules above.
-         * Hidden by default; updateFridayVisibility() in app.js removes this
+         * Hidden by default; updateFridayVisibility() in js/settings.js removes this
          * class once Friday has content, or the "always show" setting is on.
          * nth-last-child(2) is ה (Thursday) — since :nth-last-child counts
          * DOM position, not what's rendered, this still targets ה correctly
@@ -697,93 +713,111 @@
             display: none;
         }
 
-        /* ── Hover expand: pop any tight block above its neighbours ─────────────
-           Applies to BOTH data-small and data-medium (and any normal block that's
-           still tight). On hover the block goes overflow:visible and the
-           .class-content card expands to cover the entire event block completely,
-           hiding the original compact appearance beneath it.
+        /* ── Expand: pop any tight block above its neighbours ───────────────────
+           Applies to BOTH data-small and data-medium. The block goes
+           overflow:visible and the .class-content card expands to cover the
+           entire event block, hiding the compact appearance beneath it.
+
+           Triggers (all equivalent):
+             :hover                        mouse
+             .expanded                     tap on touch screens (makeCompactEventExpandable in js/calendar.js)
+             :focus-visible / :has(...)    keyboard focus on the block or one of its buttons
+           :focus-visible rather than :focus-within so a mouse click doesn't
+           leave the card stuck open once the pointer has moved away.
+           There is deliberately no (hover: hover) guard any more — that guard
+           is what kept touch screens from ever seeing the enlarged card.
         ──────────────────────────────────────────────────────────────────────── */
-        @media (hover: hover) {
-            /* Trigger expand for small and medium blocks */
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover {
-                overflow: visible;
-                z-index: 100;
-                box-shadow: none; /* shadow moves to the expanded .class-content card */
-            }
+        /* Trigger expand for small and medium blocks */
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)),
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) {
+            overflow: visible;
+            z-index: 100;
+            box-shadow: none; /* shadow moves to the expanded .class-content card */
+        }
 
-            /* Hide the original block's own border/background so only the
-               expanded card is visible — achieved by making the block itself
-               transparent while the .class-content card covers it completely. */
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover {
-                border-color: transparent !important;
-                background-color: transparent !important;
-            }
+        /* Hide the original block's own border/background so only the
+           expanded card is visible — achieved by making the block itself
+           transparent while the .class-content card covers it completely. */
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)),
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) {
+            border-color: transparent !important;
+            background-color: transparent !important;
+        }
 
-            /* The inner content card fully covers the block from its top-left
-               corner, growing downward as needed. min-height ensures it's
-               always at least as tall as the original block.
-               Use --event-border-color (set inline by JS alongside --event-bg)
-               so the border is always the course's own colour — border-color:inherit
-               would pick up the transparent value set on the parent above. */
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-content,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-content {
-                /* Enlarged card, centred on the original block. It spans the
-                   WHOLE day column (--ext-left / --ext-right are set per block
-                   in app.js), so a block that was squeezed beside an overlapping
-                   one grows as if nothing overlapped it. The action buttons live
-                   inside this card (see markup), so they always sit at its own
-                   top-left corner, and the top padding keeps text clear of them. */
-                position: absolute;
-                top: 50%;
-                left: calc(var(--ext-left, 0) * -1%);
-                right: calc(var(--ext-right, 0) * -1%);
-                min-width: 130px;
-                box-sizing: border-box;
-                transform: translateY(-50%);
-                min-height: 100%;
-                background: var(--event-bg, var(--card));
-                border: 2px solid var(--event-border-color, currentColor);
-                border-radius: 6px;
-                padding: 36px 6px 10px;
-                box-shadow: 0 6px 20px rgba(0,0,0,0.28);
-                z-index: 1;
-            }
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-title,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-title {
-                font-size: clamp(10px, 13cqw, 13px);
-                -webkit-line-clamp: 4;
-            }
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-meta,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-meta {
-                display: flex;
-            }
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .class-time,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .class-time {
-                display: block;
-                font-size: clamp(9px, 11cqw, 11px);
-            }
-            /* Buttons restore to comfortable tap size on hover, sitting above
-               the expanded .class-content card (z-index: 3 > card's 1) */
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-actions,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-actions {
-                top: 3px;
-                left: 3px;
-                gap: 2px;
-                padding: 2px 3px;
-                border-radius: 6px;
-                z-index: 3;
-            }
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-btn,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-btn {
-                width: 22px;
-                height: 22px;
-            }
-            .class-event[data-small]:not(.ghost):not(.dimmed):hover .box-btn svg,
-            .class-event[data-medium]:not(.ghost):not(.dimmed):hover .box-btn svg {
-                width: 12px;
-                height: 12px;
+        /* The inner content card fully covers the block from its top-left
+           corner, growing downward as needed. min-height ensures it's
+           always at least as tall as the original block.
+           Use --event-border-color (set inline by JS alongside --event-bg)
+           so the border is always the course's own colour — border-color:inherit
+           would pick up the transparent value set on the parent above. */
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-content,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-content {
+            /* Enlarged card, centred on the original block. It spans the
+               WHOLE day column (--ext-left / --ext-right are set per block
+               in js/calendar.js), so a block that was squeezed beside an overlapping
+               one grows as if nothing overlapped it. The action buttons live
+               inside this card (see markup), so they always sit at its own
+               top-left corner, and the top padding keeps text clear of them. */
+            position: absolute;
+            top: 50%;
+            left: calc(var(--ext-left, 0) * -1%);
+            right: calc(var(--ext-right, 0) * -1%);
+            min-width: 130px;
+            box-sizing: border-box;
+            transform: translateY(-50%);
+            min-height: 100%;
+            background: var(--event-bg, var(--card));
+            border: 2px solid var(--event-border-color, currentColor);
+            border-radius: 6px;
+            padding: 36px 6px 10px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.28);
+            z-index: 1;
+        }
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-title,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-title {
+            font-size: clamp(10px, 13cqw, 13px);
+            -webkit-line-clamp: 4;
+        }
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-meta,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-meta {
+            display: flex;
+        }
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-time,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .class-time {
+            display: block;
+            font-size: clamp(9px, 11cqw, 11px);
+        }
+        /* Buttons restore to comfortable tap size on hover, sitting above
+           the expanded .class-content card (z-index: 3 > card's 1) */
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-actions,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-actions {
+            top: 3px;
+            left: 3px;
+            gap: 2px;
+            padding: 2px 3px;
+            border-radius: 6px;
+            z-index: 3;
+        }
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-btn,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-btn {
+            width: 22px;
+            height: 22px;
+        }
+        .class-event[data-small]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-btn svg,
+        .class-event[data-medium]:not(.ghost):not(.dimmed):is(:hover, .expanded, :focus-visible, :has(:focus-visible)) .box-btn svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        .class-event:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+        /* Touch: the buttons of a compact block are only 14–18px wide. Until the
+           block has been tapped open they ignore touches, so a tap on that spot
+           opens the card instead of triggering a tiny button by accident. */
+        @media (hover: none) {
+            .class-event[data-small]:not(.expanded):not(:hover) .box-actions,
+            .class-event[data-medium]:not(.expanded):not(:hover) .box-actions {
+                pointer-events: none;
             }
         }
 
@@ -796,7 +830,7 @@
         .class-event.ghost:hover { box-shadow: 0 4px 10px rgba(0,0,0,0.25); transform: scale(1.02); opacity: 1; }
         .dimmed { opacity: 0.25; pointer-events: none; }
 
-        /* Calendar-preview picker (see startPreview() in app.js): while active,
+        /* Calendar-preview picker (see startPreview() in js/preview.js): while active,
          * everything real on the calendar fades into the background except the
          * candidate ghost blocks, which stay fully visible and clickable. */
         .calendar-wrapper.preview-mode .class-event:not(.preview-ghost) { opacity: 0.12; pointer-events: none; transition: opacity 0.2s; }
@@ -1082,7 +1116,7 @@
         dialog::backdrop { background: rgba(0,0,0,0.5); }
         .form-group { margin-bottom: 15px; }
         /* An extra meeting row added via "+ הוסף מפגש נוסף" (see
-           addExtraSessionRow() in app.js) — same fields as the main
+           addExtraSessionRow() in js/editor.js) — same fields as the main
            day/start/end row, boxed so it reads as "one more meeting" and
            removable via the ✕ in its header. */
         .session-row.extra {

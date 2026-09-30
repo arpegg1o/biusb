@@ -5,27 +5,36 @@
   ============================== IMPORTANT ==============================
   DO NOT DELETE THIS COMMENT.
 
-  Every time you change app.js or styles.css and upload the new version,
-  you MUST also change the "?v=" number in the <link> (styles.css) and
-  <script> (app.js) tags in THIS file (index.html), and upload index.html too.
+  Every time you change ANY of the js/*.js files or styles.css and upload
+  the new version, the "?v=" number in the <link> (styles.css) and in every
+  <script> (js/*.js) tag in THIS file (index.html) must change, and
+  index.html must be uploaded too.
 
-  Example:   app.js?v=20260929-4   ->   app.js?v=20260930-1
+  EASIEST: run ./stamp-version.sh before uploading - it does the bump for you
+  (it updates every tag at once).
+  (Doing it by hand also works, as described below.)
 
-  Why: browsers keep a saved copy of app.js / styles.css and reuse it.
+  Example:   js/parser.js?v=20260929-4   ->   js/parser.js?v=20260930-1
+
+  Why: browsers keep a saved copy of each script / stylesheet and reuse it.
   They identify a file by its full address, so a new "?v=" value looks like a
   brand-new file and forces every user's browser to download the update.
-  The file on the server is still just called app.js / styles.css - "?v=" is
-  only written here in index.html; never rename the real files.
+  The files on the server keep their normal names - "?v=" is only written
+  here in index.html; never rename the real files.
   The value can be anything, as long as it is different from the previous one
   (date + counter is a good habit). If you forget, users may keep seeing
   the old version for a while.
+
+  The scripts are plain (non-module) scripts that share one global scope, so
+  their ORDER below matters: state.js first, main.js last. If you add a new
+  file under js/, add its tag here too (tests/structure.test.js checks this).
   =======================================================================
 -->
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.25, maximum-scale=5.0">
     <title>מערכת שעות</title>
-    <link rel="stylesheet" href="styles.css?v=20260929-3">
+    <link rel="stylesheet" href="styles.css?v=20260930-080307">
 </head>
 <body>
 
@@ -44,7 +53,7 @@
 
     <!-- Mobile-only: switch the stacked one-day-per-card layout for the same
          grid/table the desktop uses (scroll or pinch-zoom to read it) — see
-         toggleCalendarViewMode() in app.js. Hidden above the 900px breakpoint,
+         toggleCalendarViewMode() in js/settings.js. Hidden above the 900px breakpoint,
          where the grid is already the only layout. -->
     <button id="viewModeToggleBtn" class="mobile-only-btn" onclick="toggleCalendarViewMode()" title="החלף לתצוגת טבלה">
         <!-- Icon injected by JS -->
@@ -65,7 +74,7 @@
 </div>
 
 <!-- Calendar-preview control bar: shown instead of a plain list while picking
-     a course's group (see startPreview() in app.js) — a plain fixed bar
+     a course's group (see startPreview() in js/preview.js) — a plain fixed bar
      rather than a <dialog>, deliberately, so the real calendar underneath
      stays clickable (a native <dialog>.showModal() blocks that). -->
 <div id="previewControlBar" class="preview-control-bar" style="display:none;"></div>
@@ -197,7 +206,7 @@
                  schedule includes courses that have no fixed hours (see renderTimelessStrip()). -->
             <div id="timelessStrip" class="timeless-strip" style="display:none;"></div>
 
-            <!-- Named, saved schedules (see "Saved schedules" in app.js). A saved
+            <!-- Named, saved schedules (see js/saved-schedules.js). A saved
                  schedule is a snapshot of the courses, the chosen electives and
                  which schedule number you were looking at. Cards are rendered by
                  renderSavedSchedules(). -->
@@ -283,7 +292,7 @@
     <!-- The always-present main day/start/end row, plus any extra
          independent course rows added via "+ הוסף שורה נוספת" below (each
          with its own type/semester/day/time/elective — see
-         addExtraSessionRow()/collectExtraSessions() in app.js). Extra rows
+         addExtraSessionRow()/collectExtraSessions() in js/editor.js). Extra rows
          share only the course name typed above; they're saved as separate
          entries, not as more meetings of one group. -->
     <div id="editSessionsList">
@@ -471,7 +480,7 @@
         <span>הצג תמיד את יום שישי</span>
         <!-- Friday is hidden by default and shows itself automatically the
              moment a course lands on it (see updateFridayVisibility() in
-             app.js) — this forces it visible even when empty. -->
+             js/settings.js) — this forces it visible even when empty. -->
         <label class="switch">
             <input type="checkbox" id="settingsShowFridayToggle" onchange="setShowFridayAlways(this.checked)">
             <span class="slider"></span>
@@ -519,9 +528,28 @@
 </dialog>
 
 <script src="vendor/uFuzzy.iife.min.js"></script>
-<!-- Bump ?v= on every deploy: without it, browsers/CDNs that cache static
-     files aggressively can keep serving an old app.js after an update. -->
-<script src="app.js?v=20260929-4"></script>
+<!-- Bump ?v= on every deploy (./stamp-version.sh does it for every tag below):
+     without it, browsers/CDNs that cache static files aggressively can keep
+     serving old scripts after an update.
+     These are classic scripts sharing one global scope - keep this order. -->
+<script src="js/state.js?v=20260930-080307"></script>
+<script src="js/utils.js?v=20260930-080307"></script>
+<script src="js/search.js?v=20260930-080307"></script>
+<script src="js/catalog.js?v=20260930-080307"></script>
+<script src="js/exams.js?v=20260930-080307"></script>
+<script src="js/exams-export.js?v=20260930-080307"></script>
+<script src="js/course-dialog.js?v=20260930-080307"></script>
+<script src="js/preview.js?v=20260930-080307"></script>
+<script src="js/solver.js?v=20260930-080307"></script>
+<script src="js/alternatives.js?v=20260930-080307"></script>
+<script src="js/sidebar.js?v=20260930-080307"></script>
+<script src="js/calendar.js?v=20260930-080307"></script>
+<script src="js/editor.js?v=20260930-080307"></script>
+<script src="js/parser.js?v=20260930-080307"></script>
+<script src="js/saved-schedules.js?v=20260930-080307"></script>
+<script src="js/import-export.js?v=20260930-080307"></script>
+<script src="js/settings.js?v=20260930-080307"></script>
+<script src="js/main.js?v=20260930-080307"></script>
 
 </body>
 </html>

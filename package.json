@@ -1,0 +1,8 @@
+{
+  "name": "schedule-builder",
+  "private": true,
+  "description": "Static site; package.json exists only to run the tests (npm test).",
+  "scripts": {
+    "test": "node --test"
+  }
+}
