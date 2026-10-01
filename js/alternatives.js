@@ -9,6 +9,46 @@
 // inline onclick/onchange handlers in index.html. The load order lives in index.html.
 // ============================================================================
 
+/** Hours of one option (all its sessions) as a comparable string, or null
+ * when it has no fixed hours (those are never treated as the same). */
+function optionSignature(sessions) {
+    if (!sessions.every(c => c.day && c.start && c.end)) return null;
+    return sessions.map(c => c.day + '|' + c.start + '|' + c.end).sort().join(',');
+}
+
+/** The other options (as a flat list of entries) that could replace the one
+ * currently in the schedule for a slot ("name - type"). Options with exactly
+ * the same hours as the chosen one — or as an earlier option in the list — are
+ * the same choice and are shown once (the solver treats them the same way). */
+function getAlternativeEntries(currentSem, courseKey, schedule) {
+    const byOption = new Map();
+    rawCourses.forEach(c => {
+        if (!(c.semester === currentSem || c.semester === "שנתי")) return;
+        if (`${c.name} - ${c.type}` !== courseKey) return;
+        const k = c.courseGroupId || c.id;
+        if (!byOption.has(k)) byOption.set(k, []);
+        byOption.get(k).push(c);
+    });
+    const chosenKeys = new Set(schedule.map(c => c.courseGroupId || c.id));
+    const seen = new Set();
+    byOption.forEach((sessions, k) => {
+        if (!chosenKeys.has(k)) return;
+        const sig = optionSignature(sessions);
+        if (sig !== null) seen.add(sig);
+    });
+    const out = [];
+    byOption.forEach((sessions, k) => {
+        if (chosenKeys.has(k)) return;
+        const sig = optionSignature(sessions);
+        if (sig !== null) {
+            if (seen.has(sig)) return;
+            seen.add(sig);
+        }
+        sessions.forEach(c => out.push(c));
+    });
+    return out;
+}
+
 function getSearchStatus(cls, currentSchedule) {
     const currentSem = getCurrentSemester();
     const semCourses = rawCourses.filter(c => c.semester === currentSem || c.semester === "שנתי");
@@ -20,12 +60,25 @@ function getSearchStatus(cls, currentSchedule) {
         optionsMap[optionKey].push(c);
     });
     
-    const alternatives = Object.values(optionsMap);
+    const currentOptionKey = cls.courseGroupId || cls.id;
+    let alternatives = Object.values(optionsMap);
+
+    // Options with identical hours are one choice, not several.
+    const curSet = alternatives.find(o => (o[0].courseGroupId || o[0].id) === currentOptionKey);
+    const seenSigs = new Set();
+    if (curSet) { const cs = optionSignature(curSet); if (cs !== null) seenSigs.add(cs); }
+    alternatives = alternatives.filter(o => {
+        if (o === curSet) return true;
+        const sg = optionSignature(o);
+        if (sg === null) return true;
+        if (seenSigs.has(sg)) return false;
+        seenSigs.add(sg);
+        return true;
+    });
     
     // If there are literally no other options, it should ALWAYS remain locked!
     if (alternatives.length <= 1) return 'locked'; 
 
-    const currentOptionKey = cls.courseGroupId || cls.id;
     const scheduleMinusThis = currentSchedule.filter(c => (c.courseGroupId || c.id) !== currentOptionKey);
     
     let canMoveNow = false;

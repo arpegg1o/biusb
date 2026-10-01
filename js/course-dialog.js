@@ -60,7 +60,7 @@ const SEMESTER_LIST_ORDER = ['a', 'b', 'summer', 'annual'];
  * `true` passed to toggleGroupInSchedule() below). */
 function renderGroupsBySemester(course) {
     const bySemester = {};
-    for (const g of getMergedGroups(course)) {
+    for (const g of getListViewGroups(course)) {
         if (g.type === 'other') continue; // never offered, matches CourseDetailPanel
         (bySemester[g.semester] = bySemester[g.semester] || []).push(g);
     }
@@ -162,7 +162,7 @@ function renderGroupsBySemester(course) {
 function addAllGroupsForCourseInSemester(semesterKey) {
     const course = currentSearchAddCourse;
     if (!course) return;
-    const toAdd = getMergedGroups(course).filter(
+    const toAdd = getListViewGroups(course).filter(
         (g) => g.type !== 'other' && g.semester === semesterKey && !isGroupAdded(g),
     );
     if (toAdd.length === 0) return;
@@ -176,7 +176,7 @@ function addAllGroupsForCourseInSemester(semesterKey) {
 function removeAllGroupsForCourseInSemester(semesterKey) {
     const course = currentSearchAddCourse;
     if (!course) return;
-    const toRemove = getMergedGroups(course).filter(
+    const toRemove = getListViewGroups(course).filter(
         (g) => g.type !== 'other' && g.semester === semesterKey && isGroupAdded(g),
     );
     if (toRemove.length === 0) return;
@@ -224,7 +224,9 @@ function onSearchAddElectiveToggleChange() {
  * just whichever one is currently selected in the header. */
 function toggleGroupInSchedule(groupId, silent = false, allowAnySemester = false) {
     const course = currentSearchAddCourse;
-    const group = course && findMergedGroup(course, groupId);
+    // The list view (allowAnySemester) offers groups that may be split by
+    // remark (see getListViewGroups()); the calendar preview uses merged ones.
+    const group = course && (allowAnySemester ? findListViewGroup(course, groupId) : findMergedGroup(course, groupId));
     if (!group) return;
     const courseName = course.nameHe;
     const ids = mergedGroupIds(group);

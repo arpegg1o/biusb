@@ -99,11 +99,37 @@ function initWorker() {
                 const groupsToFulfill = {};
                 const optionsMap = {};
                 
+                // Options of ONE slot that have exactly the same hours are the
+                // same choice (e.g. two groups differing only by lecturer, both
+                // added): keep the first, so schedules never repeat each other.
+                // Options without fixed hours are never merged. A pinned group
+                // is always the one kept.
+                const optSessions = new Map();
+                semCourses.forEach(c => {
+                    if (c.isElective && !activeElectives.includes(c.name)) return;
+                    const slot = c.name + " (" + c.type + ")";
+                    const ok = c.courseGroupId || c.id;
+                    const mk = slot + '#|#' + ok;
+                    if (!optSessions.has(mk)) optSessions.set(mk, { slot: slot, optionKey: ok, sessions: [] });
+                    optSessions.get(mk).sessions.push(c);
+                });
+                const optEntries = Array.from(optSessions.values());
+                if (pinnedGroupKey) optEntries.sort((a, b) => (b.optionKey === pinnedGroupKey) - (a.optionKey === pinnedGroupKey));
+                const seenSigs = new Set();
+                const droppedOptions = new Set();
+                optEntries.forEach(o => {
+                    if (!o.sessions.every(c => c.day && c.start && c.end)) return;
+                    const sig = o.slot + '#|#' + o.sessions.map(c => c.day + '|' + c.start + '|' + c.end).sort().join(',');
+                    if (seenSigs.has(sig)) droppedOptions.add(o.slot + '#|#' + o.optionKey);
+                    else seenSigs.add(sig);
+                });
+
                 semCourses.forEach(c => {
                     if (c.isElective && !activeElectives.includes(c.name)) return;
                     const key = c.name + " (" + c.type + ")";
                     const optionKey = c.courseGroupId || c.id; 
                     
+                    if (droppedOptions.has(key + '#|#' + optionKey)) return;
                     if (!optionsMap[key]) optionsMap[key] = {};
                     if (!optionsMap[key][optionKey]) optionsMap[key][optionKey] = [];
                     optionsMap[key][optionKey].push(c);
@@ -292,9 +318,15 @@ function initWorker() {
             // (deterministic) solver on the same input reproduces the
             // exact same list of schedules in the exact same order, so
             // the saved index still points at the same schedule as before.
-            const savedIdx = semesterIndices[currentSem];
-            semesterIndices[currentSem] =
-                (typeof savedIdx === 'number' && savedIdx >= 0 && savedIdx < validSchedules.length) ? savedIdx : 0;
+            const savedChoices = semesterChoices[currentSem];
+            if (savedChoices && Object.keys(savedChoices).length && validSchedules.length > 0) {
+                // Re-find the schedule that was on screen, wherever the new ranking put it.
+                semesterIndices[currentSem] = chooseClosestByChoices(validSchedules, savedChoices);
+            } else {
+                const savedIdx = semesterIndices[currentSem];
+                semesterIndices[currentSem] =
+                    (typeof savedIdx === 'number' && savedIdx >= 0 && savedIdx < validSchedules.length) ? savedIdx : 0;
+            }
         } else {
             // A course/group/elective actually changed within the same
             // semester — keep whatever's on screen as intact as
@@ -305,6 +337,7 @@ function initWorker() {
         hasComputedOnce = true;
         lastComputedSemester = currentSem;
         const needsUnpinnedRefresh = !!e.data.pinRefresh && validSchedules.length > 0;
+        if (importInProgress) { importInProgress = false; showToast('הנתונים יובאו בהצלחה ✓', 3000); }
 
         document.getElementById('calendarBody').style.opacity = '1';
         activeAlternativeKey = null; 
@@ -397,22 +430,20 @@ function anchorChoicesFor(schedule) {
 function chooseClosestScheduleIndex(candidates, previousSchedule) {
     if (candidates.length === 0) return 0;
     if (!previousSchedule || previousSchedule.length === 0) return 0;
+    return chooseClosestByChoices(candidates, scheduleGroupChoices(previousSchedule));
+}
 
-    const previousChoices = scheduleGroupChoices(previousSchedule);
-    let bestIdx = 0;
-    let bestScore = -1;
+function chooseClosestByChoices(candidates, previousChoices) {
+    if (candidates.length === 0) return 0;
+    let bestIdx = 0, bestScore = -1;
     candidates.forEach((sched, idx) => {
         const choices = scheduleGroupChoices(sched);
         let score = 0;
         for (const slotKey in previousChoices) {
             if (choices[slotKey] === previousChoices[slotKey]) score++;
         }
-        // Candidates are already sorted best-first by the solver — ties
-        // keep whichever came first, i.e. the objectively "nicer" one.
-        if (score > bestScore) {
-            bestScore = score;
-            bestIdx = idx;
-        }
+        // Candidates are sorted best-first; ties keep the earlier one.
+        if (score > bestScore) { bestScore = score; bestIdx = idx; }
     });
     return bestIdx;
 }
@@ -460,7 +491,7 @@ function updateUI(pushHistory = true, silent = false) {
         currentSem: currentSem,
         activeElectives: Array.from(activeElectives),
         allowOverlaps: devModeAllowOverlaps,
-        anchorChoices: anchorChoicesFor(scheduleSnapshotBeforeUpdate),
+        anchorChoices: anchorChoicesFor(scheduleSnapshotBeforeUpdate) || semesterChoices[currentSem] || null,
         pinnedGroupKey: pinKey,
         pinRefresh: !!pinKey,
         seq: ++latestSolveSeq
@@ -486,6 +517,12 @@ function updateStatus() {
         statusEl.style.color = 'var(--text-main)';
         statusEl.style.fontSize = '18px';
         statusEl.title = scheduleListTruncated ? 'יש יותר מדי אפשרויות - מוצגות המערכות הטובות ביותר בלבד' : '';
+
+        const shown = validSchedules[semesterIndices[currentSem]];
+        if (shown && shown.length) {
+            semesterChoices[currentSem] = scheduleGroupChoices(shown);
+            try { localStorage.setItem('mySchedulesChoices', JSON.stringify(semesterChoices)); } catch (e) {}
+        }
     }
 
     // Which saved card is framed depends on which alternative is

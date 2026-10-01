@@ -217,6 +217,7 @@ function clearAll() {
     if(confirm("האם למחוק הכל?")) {
         rawCourses = []; historyStack = []; activeElectives.clear();
         semesterIndices = { "א'": 0, "ב'": 0, "קיץ": 0 };
+        semesterChoices = {}; localStorage.removeItem('mySchedulesChoices');
         localStorage.removeItem('mySchedulesHistory');
         detachFromSavedSchedule();
         updateUI(false);

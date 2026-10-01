@@ -283,6 +283,7 @@ function loadSavedSchedule(id) {
         else if (!keptNames.has(n)) activeElectives.delete(n);
     });
     semesterIndices[semester] = saved.scheduleIndex || 0;
+    delete semesterChoices[semester];
 
     setActiveSavedScheduleId(id);
     activeAlternativeKey = null;

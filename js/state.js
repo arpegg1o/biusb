@@ -15,6 +15,11 @@ let historyStack = [];
 let validSchedules = [];
 let activeElectives = new Set();
 let semesterIndices = { "א'": 0, "ב'": 0, "קיץ": 0 };
+// Per semester: { "name (type)": groupId } of the schedule last on screen.
+// The index alone is not stable (the solver re-ranks), this is.
+let semesterChoices = {};
+// True from the moment a file import starts until the solver has shown the result.
+let importInProgress = false;
 let activeAlternativeKey = null; 
 let scheduleWorker = null; 
 // True when the solver hit its cap and is only showing the best N schedules.

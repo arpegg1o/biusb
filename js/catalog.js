@@ -94,6 +94,48 @@ function absorbGroupMeta(entry, g, lecturer, code) {
     }
 }
 
+// One entry per source group; further groups are folded in with addToGroupEntry().
+function newGroupEntry(g) {
+    const lecturer = (g.lecturerName || '').trim();
+    const code = (g.groupCode === undefined || g.groupCode === null) ? '' : String(g.groupCode);
+    const entry = Object.assign({}, g, {
+        mergedIds: [g.id],
+        lecturerNames: lecturer ? [lecturer] : [],
+        groupCodes: code ? [code] : [],
+        clusters: [],
+        remarks: [],
+        links: [],
+    });
+    absorbGroupMeta(entry, g, lecturer, code);
+    return entry;
+}
+
+function addToGroupEntry(entry, g) {
+    const lecturer = (g.lecturerName || '').trim();
+    const code = (g.groupCode === undefined || g.groupCode === null) ? '' : String(g.groupCode);
+    entry.mergedIds.push(g.id);
+    if (lecturer && !entry.lecturerNames.includes(lecturer)) entry.lecturerNames.push(lecturer);
+    if (code && !entry.groupCodes.includes(code)) entry.groupCodes.push(code);
+    absorbGroupMeta(entry, g, lecturer, code);
+}
+
+function finalizeGroupEntry(e) {
+    e.lecturerName = e.lecturerNames.join('/');
+    e.groupCode = e.groupCodes.join('/');
+    // Merged metadata (nothing from the combined groups is dropped):
+    //  - clusters: de-duplicated union
+    //  - remark:   distinct remarks joined with " | " (single remark if they agree)
+    //  - shoamIds / syllabi: every distinct id / link; shoamId / syllabus keep the
+    //    first one for callers that only read a single value
+    //  - links: per-group { groupCode, lecturerName, shoamId, syllabus } so each
+    //    lecturer/group can be tied to its own link
+    e.remark = e.remarks.join(' | ');
+    e.shoamIds = [...new Set(e.links.map((l) => l.shoamId).filter(Boolean))];
+    e.syllabi = [...new Set(e.links.map((l) => l.syllabus).filter(Boolean))];
+    if (e.shoamIds.length) e.shoamId = e.shoamIds[0];
+    if (e.syllabi.length) e.syllabus = e.syllabi[0];
+}
+
 function getMergedGroups(course) {
     if (!course || !Array.isArray(course.groups)) return [];
     if (course.__mergedGroups) return course.__mergedGroups;
@@ -108,51 +150,55 @@ function getMergedGroups(course) {
             ? null
             : `${g.type}|${g.semester}|${meetingSignature(g)}`;
         const existing = key ? byKey.get(key) : null;
-        const lecturer = (g.lecturerName || '').trim();
-        const code = (g.groupCode === undefined || g.groupCode === null) ? '' : String(g.groupCode);
 
         if (existing) {
-            existing.mergedIds.push(g.id);
-            if (lecturer && !existing.lecturerNames.includes(lecturer)) existing.lecturerNames.push(lecturer);
-            if (code && !existing.groupCodes.includes(code)) existing.groupCodes.push(code);
-            absorbGroupMeta(existing, g, lecturer, code);
+            addToGroupEntry(existing, g);
             continue;
         }
 
-        const entry = Object.assign({}, g, {
-            mergedIds: [g.id],
-            lecturerNames: lecturer ? [lecturer] : [],
-            groupCodes: code ? [code] : [],
-            clusters: [],
-            remarks: [],
-            links: [],
-        });
-        absorbGroupMeta(entry, g, lecturer, code);
+        const entry = newGroupEntry(g);
         merged.push(entry);
         if (key) byKey.set(key, entry);
     }
 
-    merged.forEach((e) => {
-        e.lecturerName = e.lecturerNames.join('/');
-        e.groupCode = e.groupCodes.join('/');
-        // Merged metadata (nothing from the combined groups is dropped):
-        //  - clusters: de-duplicated union
-        //  - remark:   distinct remarks joined with " | " (single remark if they agree)
-        //  - shoamIds / syllabi: every distinct id / link; shoamId / syllabus keep the
-        //    first one for callers that only read a single value
-        //  - links: per-group { groupCode, lecturerName, shoamId, syllabus } so each
-        //    lecturer/group can be tied to its own link
-        e.remark = e.remarks.join(' | ');
-        e.shoamIds = [...new Set(e.links.map((l) => l.shoamId).filter(Boolean))];
-        e.syllabi = [...new Set(e.links.map((l) => l.syllabus).filter(Boolean))];
-        if (e.shoamIds.length) e.shoamId = e.shoamIds[0];
-        if (e.syllabi.length) e.syllabus = e.syllabi[0];
-    });
+    merged.forEach(finalizeGroupEntry);
 
     // Non-enumerable so it never leaks into anything that serializes the
     // cached course object.
     Object.defineProperty(course, '__mergedGroups', { value: merged, enumerable: false });
     return merged;
+}
+
+/** The groups as the LIST view (#searchAddDialog) shows them. Same as
+ * getMergedGroups(), except that a merged option whose source groups carry
+ * DIFFERENT remarks is shown as separate rows (grouped by remark), so a
+ * remark that belongs to one lecturer's group never appears under the other.
+ * Only the list view uses this: the calendar preview, the schedule and
+ * everything else keep using the fully merged groups. Each entry has the
+ * same shape as a merged one (mergedIds = the source ids it stands for). */
+function getListViewGroups(course) {
+    if (!course || !Array.isArray(course.groups)) return [];
+    if (course.__listViewGroups) return course.__listViewGroups;
+
+    const out = [];
+    for (const m of getMergedGroups(course)) {
+        const sources = m.mergedIds.length > 1
+            ? m.mergedIds.map((id) => course.groups.find((g) => g.id === id)).filter(Boolean)
+            : [];
+        const remarkOf = (g) => (g.remark || '').trim();
+        if (sources.length < 2 || new Set(sources.map(remarkOf)).size < 2) { out.push(m); continue; }
+
+        const byRemark = new Map();   // sources with the same remark stay merged
+        for (const g of sources) {
+            const k = remarkOf(g);
+            if (byRemark.has(k)) addToGroupEntry(byRemark.get(k), g);
+            else byRemark.set(k, newGroupEntry(g));
+        }
+        byRemark.forEach((e) => { finalizeGroupEntry(e); out.push(e); });
+    }
+
+    Object.defineProperty(course, '__listViewGroups', { value: out, enumerable: false });
+    return out;
 }
 
 function mergedGroupIds(group) {
@@ -171,6 +217,14 @@ function isGroupAdded(group) {
 /** Looks a (possibly merged) group up by any of the ids it stands for. */
 function findMergedGroup(course, groupId) {
     const groups = getMergedGroups(course);
+    return groups.find((g) => g.id === groupId)
+        || groups.find((g) => mergedGroupIds(g).includes(groupId))
+        || null;
+}
+
+/** Same lookup, over the list view's groups (see getListViewGroups()). */
+function findListViewGroup(course, groupId) {
+    const groups = getListViewGroups(course);
     return groups.find((g) => g.id === groupId)
         || groups.find((g) => mergedGroupIds(g).includes(groupId))
         || null;

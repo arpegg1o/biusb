@@ -41,6 +41,11 @@ window.onload = () => {
     const savedIndices = localStorage.getItem('mySchedulesIndices');
     if (savedIndices) semesterIndices = JSON.parse(savedIndices);
 
+    try {
+        const savedChoices = localStorage.getItem('mySchedulesChoices');
+        if (savedChoices) semesterChoices = JSON.parse(savedChoices) || {};
+    } catch (e) { semesterChoices = {}; }
+
     const savedElectives = localStorage.getItem('myActiveElectives');
     if (savedElectives) activeElectives = new Set(JSON.parse(savedElectives));
 

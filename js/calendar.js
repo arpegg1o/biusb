@@ -409,10 +409,7 @@ function renderCalendar() {
 
     let classesToRender = [...schedule];
     if (activeAlternativeKey) {
-        const allAlternatives = rawCourses.filter(c =>
-            (c.semester === currentSem || c.semester === "שנתי") &&
-            `${c.name} - ${c.type}` === activeAlternativeKey
-        );
+        const allAlternatives = getAlternativeEntries(currentSem, activeAlternativeKey, schedule);
         allAlternatives.forEach(alt => {
             if (!schedule.some(c => c.id === alt.id)) classesToRender.push(alt);
         });
@@ -474,10 +471,7 @@ function renderCalendar() {
     });
 
     if (activeAlternativeKey) {
-        const allAlternatives = rawCourses.filter(c => 
-            (c.semester === currentSem || c.semester === "שנתי") && 
-            `${c.name} - ${c.type}` === activeAlternativeKey
-        );
+        const allAlternatives = getAlternativeEntries(currentSem, activeAlternativeKey, schedule);
         allAlternatives.forEach(altClass => {
             if (!altClass.day || !altClass.start || !altClass.end) return; // timeless
             if (!schedule.some(c => c.id === altClass.id) && elementsByDay[altClass.day]) {

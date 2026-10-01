@@ -9,13 +9,25 @@
 // ============================================================================
 
 // --- Import / Export ---
+function currentChoicesForExport() {
+    const choices = JSON.parse(JSON.stringify(semesterChoices || {}));
+    const sem = getCurrentSemester();
+    const shown = validSchedules[semesterIndices[sem]];
+    // Only trust what's on screen if it was solved for this semester.
+    if (shown && shown.length && lastComputedSemester === sem) choices[sem] = scheduleGroupChoices(shown);
+    return choices;
+}
+
 function exportData() {
     if (rawCourses.length === 0) return alert("אין נתונים לייצא.");
     
     const exportObject = {
         rawCourses: rawCourses,
         semesterIndices: semesterIndices,
-        activeElectives: Array.from(activeElectives)
+        activeElectives: Array.from(activeElectives),
+        // Which group is chosen per course slot, per semester — the index
+        // alone is not stable across a re-solve, this is.
+        semesterChoices: currentChoicesForExport()
     };
     
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObject));
@@ -399,42 +411,60 @@ function exportToPDF() {
 function importData(event) {
     const file = event.target.files[0];
     if (!file) return;
+    showToast('טוען נתונים…', 60000);
     const reader = new FileReader();
+    reader.onerror = function() {
+        showToast('');
+        alert("שגיאה בייבוא הקובץ.");
+    };
     reader.onload = function(e) {
         try {
             const imported = JSON.parse(e.target.result);
-            saveState(true); 
+            let importedChoices = {};
+            if (!Array.isArray(imported) && !(imported && imported.rawCourses)) throw new Error("Invalid format");
+            saveState(true);
 
             if (Array.isArray(imported)) {
                 rawCourses = imported;
                 activeElectives = new Set();
                 semesterIndices = { "א'": 0, "ב'": 0, "קיץ": 0 };
-            } else if (imported && imported.rawCourses) {
+            } else {
                 rawCourses = imported.rawCourses;
                 semesterIndices = imported.semesterIndices || { "א'": 0, "ב'": 0, "קיץ": 0 };
                 activeElectives = new Set(imported.activeElectives || []);
-            } else {
-                throw new Error("Invalid format");
+                const c = imported.semesterChoices;
+                if (c && typeof c === 'object' && !Array.isArray(c)) importedChoices = c;
             }
+
+            // The imported file's own chosen groups win over whatever was
+            // remembered for the previous data (old exports have none, and
+            // then the saved index is used).
+            semesterChoices = importedChoices;
+            try {
+                if (Object.keys(importedChoices).length) localStorage.setItem('mySchedulesChoices', JSON.stringify(importedChoices));
+                else localStorage.removeItem('mySchedulesChoices');
+            } catch (err) {}
+            saveState(false);   // persist the imported courses too, so a reload keeps them
 
             // This is an entirely new course list, not an edit to the
             // current one — comparing it against whatever schedule was
             // on screen before the import would be meaningless. Treat it
-            // like a fresh page load instead, so updateUI() honors the
-            // imported (or reset) semesterIndices directly rather than
-            // hunting for "the closest match" to the pre-import schedule.
+            // like a fresh page load instead.
             hasComputedOnce = false;
             detachFromSavedSchedule();
+            showToast('מייבא ומחשב מערכת…', 60000);
+            importInProgress = true;   // the solver clears this and shows "imported" when done
             updateUI(false);
             // Attempt to link any manually-entered / old-export courses to
             // catalog data so they get the "+" button and exam dates.
             // Small delay so the catalog index is ready when this runs.
             setTimeout(_linkLegacyCourses, 500);
-            alert("הנתונים יובאו בהצלחה!");
-        } catch (err) { 
-            alert("שגיאה בייבוא הקובץ."); 
+        } catch (err) {
+            importInProgress = false;
+            showToast('');
+            alert("שגיאה בייבוא הקובץ.");
         }
     };
     reader.readAsText(file);
-    event.target.value = ""; 
+    event.target.value = "";
 }
