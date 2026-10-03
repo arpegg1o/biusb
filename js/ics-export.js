@@ -87,6 +87,11 @@ function defaultSemesterDates(sem) {
 
 function _icsOneLine(s) { return String(s == null ? '' : s).replace(/[\r\n]+/g, ' '); }
 
+/** prefix + name + suffix, always separated by exactly one space (empty parts add nothing). */
+function _icsWrapName(opts, name) {
+    return [opts.prefix, name, opts.suffix].map(p => String(p == null ? '' : p).trim()).filter(Boolean).join(' ');
+}
+
 function _icsAlarm(minutes) {
     if (!minutes || minutes <= 0) return [];
     return ['BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Reminder', `TRIGGER:-PT${Math.round(minutes)}M`, 'END:VALARM'];
@@ -162,7 +167,7 @@ function buildScheduleICS(opts, sem, entries) {
         const dtStart = at(series[0], sh, sm);
         const dtEnd = at(series[0], eh, em);
 
-        const title = `${opts.prefix}${c.name}${opts.suffix}` + (opts.showType && c.type ? ` (${c.type})` : '');
+        const title = _icsWrapName(opts, c.name) + (opts.showType && c.type ? ` (${c.type})` : '');
         lines.push('BEGIN:VEVENT');
         lines.push(`UID:sched-${sem}-${c.id}-${_icsLocal(dtStart)}@schedule`.replace(/\s+/g, '-'));
         lines.push(`DTSTAMP:${stamp}`);
@@ -218,7 +223,7 @@ function buildExamsICS(opts, entries) {
         for (let n = 2; usedUids.has(uid); n++) uid = uid.replace(/(-\d+)?@schedule$/, `-${n}@schedule`);
         usedUids.add(uid);
 
-        const title = `${opts.prefix}${courseName}${opts.suffix}` + (opts.showMoed ? ` — ${exam.type || 'בחינה'}` : '');
+        const title = _icsWrapName(opts, courseName) + (opts.showMoed ? ` — ${exam.type || 'בחינה'}` : '');
         const link = opts.addShoamLink && shoamId ? `https://courses.biu.ac.il/CourseDetails.aspx?lid=${shoamId}` : '';
 
         lines.push('BEGIN:VEVENT');
